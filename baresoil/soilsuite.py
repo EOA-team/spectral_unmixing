@@ -11,7 +11,7 @@ import geopandas as gpd
 import time
 import pandas as pd
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import silhouette_score
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
@@ -220,20 +220,29 @@ X = X[~np.isnan(X).any(axis=1)]
 # Convert to refl
 X = X/10000
 
+# Apply Min-Max Scaling per band
+scaler = MinMaxScaler()
+X_scaled = scaler.fit_transform(X)
+
 # Find optimal number of clusters (Silhouette score, Elbow method)
 sil_scores = []
 wcss = []
 
-for n_clusters in range(2, 11):
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42).fit(X)
-    sil_scores.append(silhouette_score(X, kmeans.labels_))
+for n_clusters in range(2,11):
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42).fit(X_scaled)
+    sil_scores.append(silhouette_score(X_scaled, kmeans.labels_))
     wcss.append(kmeans.inertia_)  # WCSS (sum of squared distances to cluster centers)
+
+    # Save the model
+    with open(f"kmeans_{n_clusters}_clusters_norm.pkl", "wb") as f:
+        pickle.dump(kmeans, f)
+
 
 plt.figure(figsize=(8, 4))
 plt.plot(range(2, 11), sil_scores)
 plt.xlabel('Number of clusters')
 plt.ylabel('Silhouette score')
-plt.savefig('sil_score.png')
+plt.savefig('sil_score_norm.png')
 plt.clf()
 
 plt.figure(figsize=(6, 4))  
@@ -241,12 +250,12 @@ plt.plot(range(2, 11), wcss, marker='o')
 plt.xlabel('Number of Clusters (k)')
 plt.ylabel('WCSS (Inertia)')
 plt.title('Elbow Method for Optimal k')
-plt.savefig('elbow_method.png')
+plt.savefig('elbow_method_norm.png')
 """
 
 ######################
 # 5. Fitting final model
-""" 
+"""
 # Sampled points 
 samples = pd.read_csv('sampled_data.csv') # contains x and y in EPSG:3035, band reflectances
 # Prepare data
@@ -257,30 +266,38 @@ X = X[~np.isnan(X).any(axis=1)]
 # Convert to refl
 X = X/10000
 
+# Apply Min-Max Scaling per band
+scaler = MinMaxScaler()
+X_scaled = scaler.fit_transform(X)
+
+with open(f"kmeans_scaler.pkl", "wb") as f:
+    pickle.dump(scaler, f)
+
+
 # Fit final KMeans
 for n_optim in range(3,7): 
 
-    # Fit model
-    kmeans = KMeans(n_clusters=n_optim, random_state=42).fit(X)
-    samples['cluster'] = kmeans.labels_ #.astype(str)
-    samples.to_csv(f'sampled_data_{n_optim}_clusters.csv')
+    # Load the model
+    with open(f"kmeans_{n_optim}_clusters_norm.pkl", "rb") as f:
+        kmeans = pickle.load(f)
 
-    # Save the model
-    with open(f"kmeans_{n_optim}_clusters.pkl", "wb") as f:
-        pickle.dump(kmeans, f)
+    # Predict
+    labels = kmeans.predict(X_scaled)
+    samples['cluster'] = labels
+    samples.to_csv(f'sampled_data_{n_optim}_clusters_norm.csv')
 
     # Plot the samples according to cluster
     gdf = gpd.GeoDataFrame(samples, geometry=gpd.points_from_xy(samples['x'], samples['y']), crs="EPSG:3035").to_crs(epsg=3857)
     gdf['cluster'] = gdf['cluster'].astype('category')
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    colors =['teal', 'orange', 'purple', 'deeppink', 'yellowgreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+    colors =['teal', 'darkorange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
     custom_cmap = ListedColormap(colors)
 
     gdf.plot(ax=ax, column='cluster', cmap=custom_cmap, markersize=0.1, legend=True, categorical=True)
     ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
     plt.title(f'Sampled Reflectances from SRC ({n_optim} clusters)')
-    plt.savefig(f'sampled_pts_{n_optim}_clusters.png')
+    plt.savefig(f'sampled_pts_{n_optim}_clusters_norm.png')
 """
 
 ######################
@@ -298,7 +315,7 @@ for n_optim in range(3,7):
   summary_melted = summary.rename_axis(index=['cluster', 'percentile']).reset_index().melt(id_vars=['cluster', 'percentile'], var_name='band', value_name='reflectance')
   band_to_wvl = dict(zip(bands, wvl))
   summary_melted['wavelength'] = summary_melted['band'].map(band_to_wvl)
-  colors =['teal', 'orange', 'purple', 'deeppink', 'yellowgreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+  colors =['teal', 'darkorange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
   custom_cmap = ListedColormap(colors)
   
   # Create the plot
@@ -313,18 +330,94 @@ for n_optim in range(3,7):
       dashes=True,  # Uses dashed lines for differentiation
       palette=custom_cmap
   )
+  plt.legend(loc='upper left')
 
   # Formatting
   plt.xlabel('Wavelength (nm)')
   plt.ylabel('Reflectance')
-  plt.ylim(0,10000)
+  plt.ylim(0,5000)
   plt.title('Soil Reflectance Spectra')
-  plt.savefig(f'soil_endmembers_{n_optim}_clusters.png')
+  plt.savefig(f'soil_endmembers_{n_optim}_clusters_norm.png')
 """
+
+
+# Plot clusters in different subplots
+for n_optim in range(3,7): 
+    df = pd.read_csv(f'sampled_data_{n_optim}_clusters_norm.csv')
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="EPSG:3035").to_crs(epsg=3857)
+    gdf['cluster'] = gdf['cluster'].astype('category')
+
+    # Create n_optim subplots, plotting the different clusters
+    fig, axs = plt.subplots(nrows=int(np.ceil(n_optim/3)), ncols=3, figsize=(15, 10))
+    axs = axs.flatten()
+    colors =['teal', 'orange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+    custom_cmap = ListedColormap(colors)
+
+    for i in range(n_optim):
+        ax = axs[i]
+        gdf[gdf['cluster'] == i].plot(ax=ax, color=colors[i], markersize=0.1)
+        ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
+        ax.set_title(f'Cluster {i}')
+
+    plt.savefig(f'sampled_pts_{n_optim}_clusters_norm_seperated.png')
+
+
+"""
+# Plot clusters added one at a time
+for n_optim in range(3,7): 
+    df = pd.read_csv(f'sampled_data_{n_optim}_clusters_norm.csv')
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="EPSG:3035").to_crs(epsg=3857)
+
+    # Create n_optim subplots, plotting the different clusters
+    fig, axs = plt.subplots(nrows=int(np.ceil(n_optim/3)), ncols=3, figsize=(15, 10))
+    axs = axs.flatten()
+    colors =['teal', 'darkorange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+    custom_cmap = ListedColormap(colors)
+
+    for i in range(n_optim):
+        ax = axs[i]
+        gdf_clusters = gdf[gdf['cluster'] <= i]
+        gdf_clusters['cluster'] = gdf_clusters['cluster'].astype('category')
+        gdf_clusters.plot(ax=ax, column='cluster', cmap=ListedColormap(colors[:i+1]), markersize=0.01, legend=True)
+        ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf_clusters.crs)
+        ax.set_title(f'Cluster 0-{i}')
+
+    plt.savefig(f'sampled_pts_{n_optim}_clusters_norm_add.png')
+"""
+
+"""
+# Plot difference maps: wehere points changed clustering
+for n_optim in range(3,6):
+
+  df_base = pd.read_csv(f'sampled_data_{n_optim}_clusters_norm.csv')
+  fig, axs = plt.subplots(1, 7-n_optim-1, figsize=(15, 5))
+
+  for n_compare in range(n_optim+1, 7):
+
+    df_compare = pd.read_csv(f'sampled_data_{n_compare}_clusters_norm.csv')
+    df_diff = df_base.merge(df_compare, on=['x', 'y'], suffixes=('_3', '_5'))
+    # Create a difference column (1 if cluster changed, 0 if unchanged)
+    df_diff['changed'] = df_diff['cluster_3'] != df_diff['cluster_5']
+    gdf_diff = gpd.GeoDataFrame(df_diff, 
+                                geometry=gpd.points_from_xy(df_diff['x'], df_diff['y']), 
+                                crs="EPSG:3035").to_crs(epsg=3857)
+    try:
+      ax = axs[n_compare-n_optim-1] 
+    except:
+      ax = axs
+    gdf_diff.plot(ax=ax, column='changed', cmap='bwr', markersize=0.5, legend=True)
+    ctx.add_basemap(ax=ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf_diff.crs)
+    ax.set_title(f"K={n_optim} vs K={n_compare}")
+  
+  plt.suptitle('Changes in Cluster Assignment')
+  plt.savefig(f'cluster_diff_{n_optim}_norm.png')
+"""
+
+
 
 ######################
 # 7. Save endmembers
-
+"""
 bands = ['SRC_B2', 'SRC_B3','SRC_B4','SRC_B5','SRC_B6','SRC_B7','SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']
 
 n_optim = 5
@@ -332,7 +425,7 @@ df = pd.read_csv(f'sampled_data_{n_optim}_clusters.csv')
 summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75]).reset_index().rename({'level_1':'percentile'}, axis=1)
 
 summary.to_pickle('summarised_soil_samples.pkl')
-
+"""
 
 
 
