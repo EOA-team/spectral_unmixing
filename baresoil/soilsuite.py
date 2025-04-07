@@ -197,17 +197,66 @@ df.to_csv("sampled_data.csv", index=False)
 """
 
 ######################
-# 4. K-means clustering - testing number of clusters
+# 3. Sample 250k points ONLY IN AGRICULTURAL AREA
 """
+data_files = os.listdir(download_dir)
+ds = xr.open_mfdataset([os.path.join(download_dir, f) for f in data_files])
+ds = ds.rio.write_crs(3035)
+
+# Resample to 10m resolution
+# See if need to use regular grid inteprolator instead to minimise artifacts
+scale_factor = 2  # 20m to 10m (double the resolution)
+x_new = np.linspace(ds.x.values[0], ds.x.values[-1], len(ds.x.values) * scale_factor)
+y_new = np.linspace(ds.y.values[-1], ds.y.values[0], len(ds.y.values) * scale_factor)
+ds = ds.interp(x=x_new, y=y_new, method="nearest")
+
+# Filter for CH FIELDS
+field_shp_path = os.path.expanduser(f'~/mnt/eo-nas1/data/landuse/raw/lnf2021.gpkg')
+field_shp = gpd.read_file(field_shp_path, crs=2056).to_crs(3035)
+field_shp['geometry'] = field_shp.geometry.buffer(-20) # Add an inward 20m buffer
+field_shp = field_shp[field_shp.geometry.is_valid & ~field_shp.geometry.is_empty] # remove empty or invalid geometries
+ds = ds.rio.clip(field_shp.geometry)
+
+# Find baresoil locations (where MASK == 1)
+valid_points = ds['MASK'] == 1
+stacked = valid_points.stack(z=('y', 'x'))  # Create 1D index
+valid_indices = stacked.values.nonzero()[0]  # Get valid indices
+
+# Sample points
+n_samples = min(270000, len(valid_indices)) # sample more, incase some are filled with missing data
+np.random.seed(42)
+sample_indices = np.random.choice(valid_indices, n_samples, replace=False)
+sampled_locs = stacked.isel(z=sample_indices).coords
+x_coords = sampled_locs['x'].values
+y_coords = sampled_locs['y'].values
+
+# Efficiently select sampled locations
+ds = ds.drop_vars(['band', 'spatial_ref'])
+samples = ds.sel(x=xr.DataArray(x_coords), y=xr.DataArray(y_coords), method='nearest')
+
+# Drop if missing data (-10000)
+df = samples.to_dataframe().reset_index()
+df = df[(df != -10000).all(axis=1)]
+
+# Subsample 250k
+df = df.sample(n=250000, random_state=42)
+
+# Save samples for future use
+df.to_csv("sampled_data_agri.csv", index=False)
+"""
+
+######################
+# 4. K-means clustering - testing number of clusters
+""" 
 # Sampled points 
-samples = pd.read_csv('sampled_data.csv') # contains x and y in EPSG:3035, band reflectances
+samples = pd.read_csv('sampled_data_agri.csv') # contains x and y in EPSG:3035, band reflectances
  
 gdf = gpd.GeoDataFrame(samples, geometry=gpd.points_from_xy(samples['x'], samples['y']), crs="EPSG:3035").to_crs(epsg=3857)
 fig, ax = plt.subplots(figsize=(8, 6))
 gdf.plot(ax=ax, color='red', markersize=0.3, label="Sampled Points")
 ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
 plt.title('Sampled reflectances from SRC')
-plt.savefig('sampled_pts.png')
+plt.savefig('plots/sampled_pts_agri.png')
 
 # Prepare data
 X = samples[['SRC_B2', 'SRC_B3', 'SRC_B4', 'SRC_B5', 'SRC_B6', 'SRC_B7', 'SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']].values
@@ -234,7 +283,7 @@ for n_clusters in range(2,11):
     wcss.append(kmeans.inertia_)  # WCSS (sum of squared distances to cluster centers)
 
     # Save the model
-    with open(f"kmeans_{n_clusters}_clusters_norm.pkl", "wb") as f:
+    with open(f"models/kmeans_{n_clusters}_clusters_agri.pkl", "wb") as f:
         pickle.dump(kmeans, f)
 
 
@@ -242,7 +291,7 @@ plt.figure(figsize=(8, 4))
 plt.plot(range(2, 11), sil_scores)
 plt.xlabel('Number of clusters')
 plt.ylabel('Silhouette score')
-plt.savefig('sil_score_norm.png')
+plt.savefig('plots/sil_score_agri.png')
 plt.clf()
 
 plt.figure(figsize=(6, 4))  
@@ -250,14 +299,14 @@ plt.plot(range(2, 11), wcss, marker='o')
 plt.xlabel('Number of Clusters (k)')
 plt.ylabel('WCSS (Inertia)')
 plt.title('Elbow Method for Optimal k')
-plt.savefig('elbow_method_norm.png')
+plt.savefig('plots/elbow_method_agri.png')
 """
 
 ######################
 # 5. Fitting final model
 """
 # Sampled points 
-samples = pd.read_csv('sampled_data.csv') # contains x and y in EPSG:3035, band reflectances
+samples = pd.read_csv('sampled_data_agri.csv') # contains x and y in EPSG:3035, band reflectances
 # Prepare data
 X = samples[['SRC_B2', 'SRC_B3', 'SRC_B4', 'SRC_B5', 'SRC_B6', 'SRC_B7', 'SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']].values
 # No data is set to -10000, convert to nan
@@ -270,7 +319,7 @@ X = X/10000
 scaler = MinMaxScaler()
 X_scaled = scaler.fit_transform(X)
 
-with open(f"kmeans_scaler.pkl", "wb") as f:
+with open(f"models/kmeans_scaler_agri.pkl", "wb") as f:
     pickle.dump(scaler, f)
 
 
@@ -278,13 +327,13 @@ with open(f"kmeans_scaler.pkl", "wb") as f:
 for n_optim in range(3,7): 
 
     # Load the model
-    with open(f"kmeans_{n_optim}_clusters_norm.pkl", "rb") as f:
+    with open(f"models/kmeans_{n_optim}_clusters_agri.pkl", "rb") as f:
         kmeans = pickle.load(f)
 
     # Predict
     labels = kmeans.predict(X_scaled)
     samples['cluster'] = labels
-    samples.to_csv(f'sampled_data_{n_optim}_clusters_norm.csv')
+    samples.to_csv(f'sampled_data_{n_optim}_clusters_agri.csv')
 
     # Plot the samples according to cluster
     gdf = gpd.GeoDataFrame(samples, geometry=gpd.points_from_xy(samples['x'], samples['y']), crs="EPSG:3035").to_crs(epsg=3857)
@@ -297,7 +346,7 @@ for n_optim in range(3,7):
     gdf.plot(ax=ax, column='cluster', cmap=custom_cmap, markersize=0.1, legend=True, categorical=True)
     ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
     plt.title(f'Sampled Reflectances from SRC ({n_optim} clusters)')
-    plt.savefig(f'sampled_pts_{n_optim}_clusters_norm.png')
+    plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri.png')
 """
 
 ######################
@@ -309,7 +358,7 @@ wvl = [490,560,665,705,740,783,842,865,1610,2190]
 
 
 for n_optim in range(3,7): 
-  df = pd.read_csv(f'sampled_data_{n_optim}_clusters.csv')
+  df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri.csv')
   summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75])
 
   summary_melted = summary.rename_axis(index=['cluster', 'percentile']).reset_index().melt(id_vars=['cluster', 'percentile'], var_name='band', value_name='reflectance')
@@ -337,13 +386,12 @@ for n_optim in range(3,7):
   plt.ylabel('Reflectance')
   plt.ylim(0,5000)
   plt.title('Soil Reflectance Spectra')
-  plt.savefig(f'soil_endmembers_{n_optim}_clusters_norm.png')
+  plt.savefig(f'plots/soil_endmembers_{n_optim}_clusters_agri.png')
 """
-
 
 # Plot clusters in different subplots
 for n_optim in range(3,7): 
-    df = pd.read_csv(f'sampled_data_{n_optim}_clusters_norm.csv')
+    df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri.csv')
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="EPSG:3035").to_crs(epsg=3857)
     gdf['cluster'] = gdf['cluster'].astype('category')
 
@@ -359,7 +407,7 @@ for n_optim in range(3,7):
         ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
         ax.set_title(f'Cluster {i}')
 
-    plt.savefig(f'sampled_pts_{n_optim}_clusters_norm_seperated.png')
+    plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_seperated.png')
 
 
 """
@@ -382,7 +430,7 @@ for n_optim in range(3,7):
         ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf_clusters.crs)
         ax.set_title(f'Cluster 0-{i}')
 
-    plt.savefig(f'sampled_pts_{n_optim}_clusters_norm_add.png')
+    plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_norm_add.png')
 """
 
 """
@@ -410,7 +458,7 @@ for n_optim in range(3,6):
     ax.set_title(f"K={n_optim} vs K={n_compare}")
   
   plt.suptitle('Changes in Cluster Assignment')
-  plt.savefig(f'cluster_diff_{n_optim}_norm.png')
+  plt.savefig(f'plots/cluster_diff_{n_optim}_norm.png')
 """
 
 
@@ -435,7 +483,7 @@ summary.to_pickle('summarised_soil_samples.pkl')
 # Load the model
 """ 
 n_optim = 2
-with open(f"kmeans_{n_optim}_clusters.pkl", "rb") as f:
+with open(f"models/kmeans_{n_optim}_clusters.pkl", "rb") as f:
     kmeans_loaded = pickle.load(f)
 
 
