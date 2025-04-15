@@ -44,7 +44,7 @@ for feature in range(classes):
 
     for _ in range(num_mixtures):
       num_endmembers = np.random.choice([2, 3])  # Randomly choose 2 or 3 endmembers
-      selected_classes = np.random.choice([0, 1, 2], size=num_endmembers, replace=True)
+      selected_classes = np.random.choice([0, 1, 2], size=num_endmembers, replace=False)
 
       endmembers = []
       for cl in selected_classes:
@@ -53,30 +53,31 @@ for feature in range(classes):
 
       # Add shade endmember
       endmembers.append(shadow_endmember)
-
       endmembers = np.array(endmembers)  # Convert to array
+      selected_classes = np.append(selected_classes, 3)  # Add shade class (index 3)
       fractions = np.random.rand(num_endmembers+1)  # Assign random weights (random uniform 0 to 1)
       fractions /= fractions.sum()  # Normalize to sum to 1
 
       synthetic_spectrum = np.dot(fractions, endmembers)  # Compute weighted sum
       features_list.append(synthetic_spectrum)
 
-      response = np.zeros(3)
-      for cl, frac in zip(selected_classes, fractions[:-1]):  # Exclude last fraction (shade)
+      response = np.zeros(4)
+      for cl, frac in zip(selected_classes, fractions):  
           response[cl] += frac
-      response_list.append(response[feature])  # Target class fraction
-    
+      response_list.append(response.tolist())  # Full compositional label
 
-     # Add all pure endmembers --> TO DO: add specific soil cluster
+
+    # Add all pure endmembers --> TO DO: add specific soil cluster
     for j, sp in enumerate(spectral_libraries):
-      label = int(j == feature)  # 1 if target class, else 0
-      features_list.extend(sp[input_bands].values.tolist())
-      response_list.extend([label] * len(sp))
-  
+        label = [0, 0, 0, 0]
+        label[j] = 1  # Pure spectrum = 100% of class i
+        features_list.extend(sp[input_bands].values.tolist())
+        response_list.extend([label] * len(sp))
 
     # Convert to DataFrame and save
     features_df = pd.DataFrame(features_list, columns=input_bands)
-    response_df = pd.DataFrame(response_list, columns=['fraction'])
+    response_df = pd.DataFrame(response_list, columns=['NPV', 'PV', 'Soil', 'Shade'])
+
 
     feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-000_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
     resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-000_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
@@ -91,7 +92,6 @@ for feature in range(classes):
 pv_endmembers = pd.read_pickle(pv_file)
 npv_endmembers = pd.read_pickle(npv_file)
 soil_endmembers = pd.read_pickle(soil_file)
-
 
 SRC_cols = ['SRC_B2','SRC_B3','SRC_B4','SRC_B5','SRC_B6','SRC_B7','SRC_B8','SRC_B8A','SRC_B11','SRC_B12']
 S2_cols = ['s2_B02','s2_B03','s2_B04','s2_B05','s2_B06','s2_B07','s2_B08','s2_B8A','s2_B11','s2_B12']
@@ -113,7 +113,7 @@ classes = 3 # (1=NPV, 2=PV, 3=Soil)
 num_mixtures = 1000  # Number of synthetic mixtures per class
 soil_groups = 5 # Will be named 1-5 since 0 is global
 
-os.makedirs("synthetic_samples", exist_ok=True)  # Ensure output folder exists
+os.makedirs("synthetic_samples_composition", exist_ok=True)  # Ensure output folder exists
 
 for soil in range(soil_groups):
   print('Considering only soil group', soil+1)
@@ -128,7 +128,7 @@ for soil in range(soil_groups):
 
       for _ in range(num_mixtures):
         num_endmembers = np.random.choice([2, 3])  # Randomly choose 2 or 3 endmembers
-        selected_classes = np.random.choice([0, 1, 2], size=num_endmembers, replace=True)
+        selected_classes = np.random.choice([0, 1, 2], size=num_endmembers, replace=False)
 
         endmembers = []
         for cl in selected_classes:
@@ -144,21 +144,23 @@ for soil in range(soil_groups):
         # Add shade endmember
         endmembers.append(shadow_endmember)
         endmembers = np.array(endmembers)  # Convert to array
+        selected_classes = np.append(selected_classes, 3)  # Add shade class (index 3)
         fractions = np.random.rand(num_endmembers+1)  # Assign random weights (random uniform 0 to 1)
         fractions /= fractions.sum()  # Normalize to sum to 1
 
         synthetic_spectrum = np.dot(fractions, endmembers)  # Compute weighted sum
         features_list.append(synthetic_spectrum)
 
-        response = np.zeros(3)
-        for cl, frac in zip(selected_classes, fractions[:-1]):  # Exclude last fraction (shade)
+        response = np.zeros(4)
+        for cl, frac in zip(selected_classes, fractions):  
             response[cl] += frac
-        response_list.append(response[feature])  # Target class fraction
-      
+        response_list.append(response.tolist())  # Full compositional label
 
+      
       # Add all pure endmembers --> TO DO: add specific soil cluster
       for j, sp in enumerate(spectral_libraries):
-          label = int(j == feature)  # 1 if target class, else 0
+          label = [0, 0, 0, 0]
+          label[j] = 1  # Pure spectrum = 100% of class i
           if j == 2:
             # Select only specific soil cluster
             df = sp[sp.cluster == soil][SRC_cols].rename(columns=dict(zip(SRC_cols, clean_names)))[input_bands]
@@ -170,7 +172,7 @@ for soil in range(soil_groups):
 
       # Convert to DataFrame and save
       features_df = pd.DataFrame(features_list, columns=input_bands)
-      response_df = pd.DataFrame(response_list, columns=['fraction'])
+      response_df = pd.DataFrame(response_list, columns=['NPV', 'PV', 'Soil', 'Shade'])
 
       feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
       resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
