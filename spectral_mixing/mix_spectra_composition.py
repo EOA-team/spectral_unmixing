@@ -33,7 +33,7 @@ iterations = 5 # Number of times to create a dataset
 classes = 3 # (1=NPV, 2=PV, 3=Soil)
 num_mixtures = 1000  # Number of synthetic mixtures per class
 
-os.makedirs("synthetic_samples", exist_ok=True)  # Ensure output folder exists
+os.makedirs("synthetic_samples_composition", exist_ok=True)  # Ensure output folder exists
 
 for feature in range(classes):
   print('Creating data for cover class', feature+1)
@@ -79,8 +79,8 @@ for feature in range(classes):
     response_df = pd.DataFrame(response_list, columns=['NPV', 'PV', 'Soil', 'Shade'])
 
 
-    feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-000_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
-    resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-000_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
+    feat_filename = f'synthetic_samples_composition/SYNTHMIX_SOIL-000_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
+    resp_filename = f'synthetic_samples_composition/SYNTHMIX_SOIL-000_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
 
     features_df.to_csv(feat_filename, index=False, sep=" ")
     response_df.to_csv(resp_filename, index=False, sep=" ")
@@ -174,8 +174,8 @@ for soil in range(soil_groups):
       features_df = pd.DataFrame(features_list, columns=input_bands)
       response_df = pd.DataFrame(response_list, columns=['NPV', 'PV', 'Soil', 'Shade'])
 
-      feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
-      resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
+      feat_filename = f'synthetic_samples_composition/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
+      resp_filename = f'synthetic_samples_composition/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
 
       features_df.to_csv(feat_filename, index=False, sep=" ")
       response_df.to_csv(resp_filename, index=False, sep=" ")
