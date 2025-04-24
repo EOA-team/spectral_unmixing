@@ -213,6 +213,7 @@ ds = ds.interp(x=x_new, y=y_new, method="nearest")
 # Filter for CH FIELDS
 field_shp_path = os.path.expanduser(f'~/mnt/eo-nas1/data/landuse/raw/lnf2021.gpkg')
 field_shp = gpd.read_file(field_shp_path, crs=2056).to_crs(3035)
+field_shp = field_shp[~field_shp['lnf_code'].isin([902,930])] # Remove summering pastures/alpine inproductive areas
 field_shp['geometry'] = field_shp.geometry.buffer(-20) # Add an inward 20m buffer
 field_shp = field_shp[field_shp.geometry.is_valid & ~field_shp.geometry.is_empty] # remove empty or invalid geometries
 ds = ds.rio.clip(field_shp.geometry)
@@ -242,21 +243,21 @@ df = df[(df != -10000).all(axis=1)]
 df = df.sample(n=250000, random_state=42)
 
 # Save samples for future use
-df.to_csv("sampled_data_agri.csv", index=False)
+df.to_csv("sampled_data_agri_v2.csv", index=False)
 """
 
 ######################
 # 4. K-means clustering - testing number of clusters
 """ 
 # Sampled points 
-samples = pd.read_csv('sampled_data_agri.csv') # contains x and y in EPSG:3035, band reflectances
+samples = pd.read_csv('sampled_data_agri_v2.csv') # contains x and y in EPSG:3035, band reflectances
  
 gdf = gpd.GeoDataFrame(samples, geometry=gpd.points_from_xy(samples['x'], samples['y']), crs="EPSG:3035").to_crs(epsg=3857)
 fig, ax = plt.subplots(figsize=(8, 6))
 gdf.plot(ax=ax, color='red', markersize=0.3, label="Sampled Points")
 ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
 plt.title('Sampled reflectances from SRC')
-plt.savefig('plots/sampled_pts_agri.png')
+plt.savefig('plots/sampled_pts_agri_v2.png')
 
 # Prepare data
 X = samples[['SRC_B2', 'SRC_B3', 'SRC_B4', 'SRC_B5', 'SRC_B6', 'SRC_B7', 'SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']].values
@@ -283,15 +284,16 @@ for n_clusters in range(2,11):
     wcss.append(kmeans.inertia_)  # WCSS (sum of squared distances to cluster centers)
 
     # Save the model
-    with open(f"models/kmeans_{n_clusters}_clusters_agri.pkl", "wb") as f:
+    with open(f"models/kmeans_{n_clusters}_clusters_agri_v2.pkl", "wb") as f:
         pickle.dump(kmeans, f)
+        print(f'Trained model {n_clusters} clusters')
 
 
 plt.figure(figsize=(8, 4))
 plt.plot(range(2, 11), sil_scores)
 plt.xlabel('Number of clusters')
 plt.ylabel('Silhouette score')
-plt.savefig('plots/sil_score_agri.png')
+plt.savefig('plots/sil_score_agri_v2.png')
 plt.clf()
 
 plt.figure(figsize=(6, 4))  
@@ -299,14 +301,14 @@ plt.plot(range(2, 11), wcss, marker='o')
 plt.xlabel('Number of Clusters (k)')
 plt.ylabel('WCSS (Inertia)')
 plt.title('Elbow Method for Optimal k')
-plt.savefig('plots/elbow_method_agri.png')
+plt.savefig('plots/elbow_method_agri_v2.png')
 """
 
 ######################
 # 5. Fitting final model
 """
 # Sampled points 
-samples = pd.read_csv('sampled_data_agri.csv') # contains x and y in EPSG:3035, band reflectances
+samples = pd.read_csv('sampled_data_agri_v2.csv') # contains x and y in EPSG:3035, band reflectances
 # Prepare data
 X = samples[['SRC_B2', 'SRC_B3', 'SRC_B4', 'SRC_B5', 'SRC_B6', 'SRC_B7', 'SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']].values
 # No data is set to -10000, convert to nan
@@ -319,7 +321,7 @@ X = X/10000
 scaler = MinMaxScaler()
 X_scaled = scaler.fit_transform(X)
 
-with open(f"models/kmeans_scaler_agri.pkl", "wb") as f:
+with open(f"models/kmeans_scaler_agri_v2.pkl", "wb") as f:
     pickle.dump(scaler, f)
 
 
@@ -327,30 +329,32 @@ with open(f"models/kmeans_scaler_agri.pkl", "wb") as f:
 for n_optim in range(3,7): 
 
     # Load the model
-    with open(f"models/kmeans_{n_optim}_clusters_agri.pkl", "rb") as f:
+    with open(f"models/kmeans_{n_optim}_clusters_agri_v2.pkl", "rb") as f:
         kmeans = pickle.load(f)
 
     # Predict
     labels = kmeans.predict(X_scaled)
     samples['cluster'] = labels
-    samples.to_csv(f'sampled_data_{n_optim}_clusters_agri.csv')
+    samples.to_csv(f'sampled_data_{n_optim}_clusters_agri_v2.csv')
 
     # Plot the samples according to cluster
     gdf = gpd.GeoDataFrame(samples, geometry=gpd.points_from_xy(samples['x'], samples['y']), crs="EPSG:3035").to_crs(epsg=3857)
     gdf['cluster'] = gdf['cluster'].astype('category')
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(16, 10))
     colors =['teal', 'darkorange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
     custom_cmap = ListedColormap(colors)
 
     gdf.plot(ax=ax, column='cluster', cmap=custom_cmap, markersize=0.1, legend=True, categorical=True)
     ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
-    plt.title(f'Sampled Reflectances from SRC ({n_optim} clusters)')
-    plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri.png')
+    plt.title(f'Clusters bare soil reflectances ({n_optim} clusters)', fontsize=16)
+    plt.xlabel('Lon [m]')
+    plt.ylabel('Lat [m]')
+    plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_v2.png')
 """
 
 ######################
-# 6. Analyse clusters
+# 6a. Analyse clusters
 """
 # Check 25th, 50th, 75th percentiles of each cluster
 bands = ['SRC_B2', 'SRC_B3','SRC_B4','SRC_B5','SRC_B6','SRC_B7','SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']
@@ -358,7 +362,7 @@ wvl = [490,560,665,705,740,783,842,865,1610,2190]
 
 
 for n_optim in range(3,7): 
-  df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri.csv')
+  df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri_v2.csv')
   summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75])
 
   summary_melted = summary.rename_axis(index=['cluster', 'percentile']).reset_index().melt(id_vars=['cluster', 'percentile'], var_name='band', value_name='reflectance')
@@ -386,12 +390,12 @@ for n_optim in range(3,7):
   plt.ylabel('Reflectance')
   plt.ylim(0,5000)
   plt.title('Soil Reflectance Spectra')
-  plt.savefig(f'plots/soil_endmembers_{n_optim}_clusters_agri.png')
-"""
+  plt.savefig(f'plots/soil_endmembers_{n_optim}_clusters_agri_v2.png')
+
 
 # Plot clusters in different subplots
 for n_optim in range(3,7): 
-    df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri.csv')
+    df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri_v2.csv')
     gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="EPSG:3035").to_crs(epsg=3857)
     gdf['cluster'] = gdf['cluster'].astype('category')
 
@@ -407,8 +411,8 @@ for n_optim in range(3,7):
         ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
         ax.set_title(f'Cluster {i}')
 
-    plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_seperated.png')
-
+    plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_seperated_v2.png')
+"""
 
 """
 # Plot clusters added one at a time
@@ -462,18 +466,117 @@ for n_optim in range(3,6):
 """
 
 
+######################
+# 6b. For K=5, rename clusters 
+"""
+# Check 25th, 50th, 75th percentiles of each cluster
+bands = ['SRC_B2', 'SRC_B3','SRC_B4','SRC_B5','SRC_B6','SRC_B7','SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']
+wvl = [490,560,665,705,740,783,842,865,1610,2190]
+
+n_optim = 5
+
+# Rename clusters
+#	Soil clusters 4 and 5 are bright soils, 1 and 2 are darker soils and cluster 3 is a medium brightness soil
+# Cluster 1 are the darkest soils, primarily found in the plateau where SOC is high and otherwise found in alpine valleys
+# Cluster 2 are medium dark soils found in the plateau, the jura and alpine valleys. They have moderate SOC in the plateau and low-moderate SOC in the jura and alpine valleys. 
+# Cluster 3 are medium bright soils with low-moderate SOC and moderate-high silt contents
+# Cluster 4 are bright soils with low SOC, mainly in the plateau and in the jura range. They have moderate clay contents
+# Cluster 5 represents the brightest soils, mainly in the plateau and characterized by low SOC and low-moderate clay contents
+
+df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri_v2.csv')
+
+label_map = {0: 5, 1: 2, 2: 4, 3: 1, 4: 3}
+new_labels = [label_map[label] for label in df['cluster'].values]
+df['cluster'] = new_labels
+
+# Plot the clusters with new names
+gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="EPSG:3035").to_crs(epsg=3857)
+gdf['cluster'] = gdf['cluster'].astype('category')
+
+fig, ax = plt.subplots(figsize=(16, 10))
+colors =['teal', 'darkorange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+custom_cmap = ListedColormap(colors)
+
+gdf.plot(ax=ax, column='cluster', cmap=custom_cmap, markersize=0.1, legend=True, categorical=True)
+ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
+plt.title(f'Clusters bare soil reflectances ({n_optim} clusters)', fontsize=16)
+plt.xlabel('Lon [m]')
+plt.ylabel('Lat [m]')
+plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_v2_renamed.png')
+
+# Plot the summarised spectra with new names
+summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75])
+
+summary_melted = summary.rename_axis(index=['cluster', 'percentile']).reset_index().melt(id_vars=['cluster', 'percentile'], var_name='band', value_name='reflectance')
+band_to_wvl = dict(zip(bands, wvl))
+summary_melted['wavelength'] = summary_melted['band'].map(band_to_wvl)
+colors =['teal', 'darkorange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+custom_cmap = ListedColormap(colors)
+
+# Create the plot
+plt.figure(figsize=(8, 5))
+sns.lineplot(
+    data=summary_melted, 
+    x='wavelength', 
+    y='reflectance', 
+    hue='cluster',  # Different colors per cluster
+    style='percentile',  # Different line styles for quantiles
+    markers=True,  # Adds markers for better readability
+    dashes=True,  # Uses dashed lines for differentiation
+    palette=custom_cmap
+)
+plt.legend(loc='upper left')
+
+# Formatting
+plt.xlabel('Wavelength (nm)')
+plt.ylabel('Reflectance')
+plt.ylim(0,5000)
+plt.title('Soil Reflectance Spectra')
+plt.savefig(f'plots/soil_endmembers_{n_optim}_clusters_agri_v2_renamed.png')
+
+
+# Plot clusters in different subplots
+gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="EPSG:3035").to_crs(epsg=3857)
+gdf['cluster'] = gdf['cluster'].astype('category')
+
+# Create n_optim subplots, plotting the different clusters
+fig, axs = plt.subplots(nrows=int(np.ceil(n_optim/3)), ncols=3, figsize=(15, 10))
+axs = axs.flatten()
+colors =['teal', 'orange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+custom_cmap = ListedColormap(colors)
+
+for i in range(n_optim):
+    ax = axs[i]
+    gdf[gdf['cluster'] == i].plot(ax=ax, color=colors[i], markersize=0.1)
+    ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
+    ax.set_title(f'Cluster {i}')
+
+plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_seperated_v2_renamed.png')
+""" 
 
 ######################
 # 7. Save endmembers
-"""
+
 bands = ['SRC_B2', 'SRC_B3','SRC_B4','SRC_B5','SRC_B6','SRC_B7','SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']
 
 n_optim = 5
-df = pd.read_csv(f'sampled_data_{n_optim}_clusters.csv')
-summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75]).reset_index().rename({'level_1':'percentile'}, axis=1)
+df = pd.read_csv(f'sampled_data_{n_optim}_clusters_agri_v2.csv')
 
-summary.to_pickle('summarised_soil_samples.pkl')
-"""
+# Rename clusters
+#	Soil clusters 4 and 5 are bright soils, 1 and 2 are darker soils and cluster 3 is a medium brightness soil
+# Cluster 1 are the darkest soils, primarily found in the plateau where SOC is high and otherwise found in alpine valleys
+# Cluster 2 are medium dark soils found in the plateau, the jura and alpine valleys. They have moderate SOC in the plateau and low-moderate SOC in the jura and alpine valleys. 
+# Cluster 3 are medium bright soils with low-moderate SOC and moderate-high silt contents
+# Cluster 4 are bright soils with low SOC, mainly in the plateau and in the jura range. They have moderate clay contents
+# Cluster 5 represents the brightest soils, mainly in the plateau and characterized by low SOC and low-moderate clay contents
+
+label_map = {0: 5, 1: 2, 2: 4, 3: 1, 4: 3}
+new_labels = [label_map[label] for label in df['cluster'].values]
+df['cluster'] = new_labels
+
+summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75]).reset_index().rename({'level_1':'percentile'}, axis=1)
+summary.to_pickle('summarised_soil_samples_renamed.pkl')
+
 
 
 
