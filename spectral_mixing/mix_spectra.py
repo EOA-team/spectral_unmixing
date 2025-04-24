@@ -6,7 +6,7 @@ import numpy as np
 
 pv_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/summarised_pv_samples_perlnf.pkl')
 npv_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/summarised_npv_samples_perlnf.pkl')
-soil_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/baresoil/summarised_soil_samples.pkl')
+soil_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/baresoil/summarised_soil_samples_renamed.pkl')
 
 pv_endmembers = pd.read_pickle(pv_file)
 npv_endmembers = pd.read_pickle(npv_file)
@@ -51,18 +51,21 @@ for feature in range(classes):
           sample = spectral_libraries[cl].sample(n=1).values.flatten()  # Sample one spectrum
           endmembers.append(sample)
 
-      # Add shade endmember
-      endmembers.append(shadow_endmember)
+      # Randomly add shade with 50% chance
+      if np.random.rand() < 0.5:
+          endmembers.append(shadow_endmember)
+          selected_classes = np.append(selected_classes, 3) # Add shade class (index 3)
 
+      # Mix spectra
       endmembers = np.array(endmembers)  # Convert to array
-      fractions = np.random.rand(num_endmembers+1)  # Assign random weights (random uniform 0 to 1)
-      fractions /= fractions.sum()  # Normalize to sum to 1
+      fractions = np.random.rand(len(endmembers)) # Assign random weights (random uniform 0 to 1)
+      fractions /= fractions.sum() # Normalize to sum to 1
 
       synthetic_spectrum = np.dot(fractions, endmembers)  # Compute weighted sum
       features_list.append(synthetic_spectrum)
 
-      response = np.zeros(3)
-      for cl, frac in zip(selected_classes, fractions[:-1]):  # Exclude last fraction (shade)
+      response = np.zeros(4)
+      for cl, frac in zip(selected_classes, fractions):
           response[cl] += frac
       response_list.append(response[feature])  # Target class fraction
     
@@ -115,7 +118,7 @@ soil_groups = 5 # Will be named 1-5 since 0 is global
 
 os.makedirs("synthetic_samples", exist_ok=True)  # Ensure output folder exists
 
-for soil in range(soil_groups):
+for soil in range(1, soil_groups+1):
   print('Considering only soil group', soil+1)
 
   for feature in range(classes):
@@ -141,17 +144,21 @@ for soil in range(soil_groups):
               sample = spectral_libraries[cl].sample(n=1).values.flatten()  # Sample one spectrum
             endmembers.append(sample)
 
-        # Add shade endmember
-        endmembers.append(shadow_endmember)
+        # Randomly add shade with 50% chance
+        if np.random.rand() < 0.5:
+            endmembers.append(shadow_endmember)
+            selected_classes = np.append(selected_classes, 3) # Add shade class (index 3)
+
+        # Mix spectra
         endmembers = np.array(endmembers)  # Convert to array
-        fractions = np.random.rand(num_endmembers+1)  # Assign random weights (random uniform 0 to 1)
-        fractions /= fractions.sum()  # Normalize to sum to 1
+        fractions = np.random.rand(len(endmembers)) # Assign random weights (random uniform 0 to 1)
+        fractions /= fractions.sum() # Normalize to sum to 1
 
         synthetic_spectrum = np.dot(fractions, endmembers)  # Compute weighted sum
         features_list.append(synthetic_spectrum)
 
-        response = np.zeros(3)
-        for cl, frac in zip(selected_classes, fractions[:-1]):  # Exclude last fraction (shade)
+        response = np.zeros(4)
+        for cl, frac in zip(selected_classes, fractions): 
             response[cl] += frac
         response_list.append(response[feature])  # Target class fraction
       
@@ -172,8 +179,8 @@ for soil in range(soil_groups):
       features_df = pd.DataFrame(features_list, columns=input_bands)
       response_df = pd.DataFrame(response_list, columns=['fraction'])
 
-      feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
-      resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil+1}_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
+      feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil}_SHADOW-TRUE_FEATURES_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
+      resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil}_SHADOW-TRUE_RESPONSE_CLASS-00{feature+1}_ITERATION-00{i+1}.txt'
 
       features_df.to_csv(feat_filename, index=False, sep=" ")
       response_df.to_csv(resp_filename, index=False, sep=" ")
