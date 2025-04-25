@@ -103,7 +103,7 @@ def train_model(model_type, model_params, soil_group, data_folder, test_size, ra
             [X_npv_train, X_pv_train, X_soil_train], [X_npv_test, X_pv_test, X_soil_test],
             [y_npv_train, y_pv_train, y_soil_train], [y_npv_test, y_pv_test, y_soil_test]
         ):  
-            if device == torch.device('cuda'):
+            if device == torch.device('cuda') and model_type == 'NN':
                 X_train, X_test, y_train, y_test = (
                     torch.FloatTensor(X_train).to(device),
                     torch.FloatTensor(X_test).to(device),
@@ -124,7 +124,7 @@ def train_model(model_type, model_params, soil_group, data_folder, test_size, ra
             #joblib.dump(model, model_path)
 
             # Save prediction and scores
-            if device == torch.device('cuda'):
+            if device == torch.device('cuda') and model_type == 'NN':
                 y_test = y_test.cpu().numpy().flatten()
             
             predictions[target_name].append(y_pred)

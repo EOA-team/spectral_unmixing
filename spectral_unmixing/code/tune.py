@@ -122,7 +122,7 @@ def objective(trial, model_type, target_name, soil_group, data_folder, test_size
             'SOIL': (X_soil_train, X_soil_test, y_soil_train, y_soil_test)
         }[target_name]
 
-        if device == torch.device('cuda'):
+        if device == torch.device('cuda') and model_type == 'NN':
                 X_train, X_test, y_train, y_test = (
                     torch.FloatTensor(X_train).to(device),
                     torch.FloatTensor(X_test).to(device),
@@ -139,7 +139,7 @@ def objective(trial, model_type, target_name, soil_group, data_folder, test_size
         else:
             model.fit(X_train, y_train)
 
-        if device == torch.device('cuda'):
+        if device == torch.device('cuda') and model_type == 'NN':
             y_test = y_test.cpu().numpy().flatten()
             
         y_pred = model.predict(X_test)
@@ -148,7 +148,6 @@ def objective(trial, model_type, target_name, soil_group, data_folder, test_size
         all_scores.append(rmse)
         r2 = (stats.pearsonr(y_test, y_pred).statistic)**2
         all_r2.append(r2)
-        print('it', iteration)
 
 
     # Save hyperparams and results
@@ -189,17 +188,17 @@ n_trials = 1
 for soil_group in range(6):
     print('Training for soil group', soil_group)
 
-    model_type = "NN"  # or "SVR", "RF"
+    model_type = "SVR"  # or "SVR", "RF"
 
-    result_file = f"{results_folder}/tuning_results_PV_soilgroup{soil_group}.xlsx"
+    result_file = f"{results_folder}/{model_type}_tuning_PV_soilgroup{soil_group}.xlsx"
     best_params_pv, score_pv = tune_model(model_type, "PV", soil_group, data_folder, test_size=0.2, random_state=42, n_trials=n_trials, result_file=result_file)
     print("Best PV Params:", best_params_pv)
 
-    result_file = f"{results_folder}/tuning_results_NPV_soilgroup{soil_group}.xlsx"
+    result_file = f"{results_folder}/{model_type}_tuning_NPV_soilgroup{soil_group}.xlsx"
     best_params_npv, score_npv = tune_model(model_type, "NPV", soil_group, data_folder, test_size=0.2, random_state=42, n_trials=n_trials, result_file=result_file)
     print("Best NPV Params:", best_params_npv)
 
-    result_file = f"{results_folder}/tuning_results_SOIL_soilgroup{soil_group}.xlsx"
+    result_file = f"{results_folder}/{model_type}_tuning_SOIL_soilgroup{soil_group}.xlsx"
     best_params_soil, score_soil = tune_model(model_type, "SOIL", soil_group, data_folder, test_size=0.2, random_state=42, n_trials=n_trials, result_file=result_file)
     print("Best SOIL Params:", best_params_soil)
 
