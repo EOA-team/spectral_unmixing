@@ -19,21 +19,9 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(os.path.dirname(os.path.realpath("__file__"))).parent))
 from models import MODELS
+import warnings
+warnings.filterwarnings("ignore")
 
-
-
-def get_NN_optim(model, model_parameters):
-    optim_type = model_params.get('optimizer', 'adam').lower()
-    if optim_type == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=model_params.get('lr', 0.001))
-    elif optim_type == 'sgd':
-        optimizer = torch.optim.SGD(model.parameters(), lr=model_params.get('lr', 0.01))
-    elif optim_type == 'rmsprop':
-        optimizer = torch.optim.RMSprop(model.parameters(), lr=model_params.get('lr', 0.001))
-    else:
-        raise ValueError(f"Unsupported optimizer: {optim_type}")
-
-    return optimizer
 
 
 def load_data(data_folder, iteration, soil_group, class_type):
@@ -68,23 +56,6 @@ def load_data_composition(data_folder, iteration, soil_group, class_type):
   response = pd.read_csv(response_file, sep=" ") # select only the fraction of interest
   
   return features.values, response.values
-
-
-def get_model(model_type, model_params):
-    if model_type == 'NN':
-        return SimpleNN(
-            input_dim=model_params['input_dim'],
-            num_layers=model_params.get('num_layers', 2),
-            hidden_dim=model_params.get('hidden_dim', 64)
-        )
-    elif model_type == 'RF':
-        from sklearn.ensemble import RandomForestRegressor
-        return RandomForestRegressor(**model_params)
-    elif model_type == 'SVR':
-        from sklearn.svm import SVR
-        return SVR(**model_params)
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
 
 
 def evaluate_model(y_true, y_pred):
@@ -132,17 +103,30 @@ def train_model(model_type, model_params, soil_group, data_folder, test_size, ra
             [X_npv_train, X_pv_train, X_soil_train], [X_npv_test, X_pv_test, X_soil_test],
             [y_npv_train, y_pv_train, y_soil_train], [y_npv_test, y_pv_test, y_soil_test]
         ):  
+            if device == torch.device('cuda'):
+                X_train, X_test, y_train, y_test = (
+                    torch.FloatTensor(X_train).to(device),
+                    torch.FloatTensor(X_test).to(device),
+                    torch.FloatTensor(y_train).view(-1, 1).to(device),
+                    torch.FloatTensor(y_test).view(-1, 1).to(device),
+                ) 
 
             model = MODELS[model_type](**model_params)
-            model.fit(X_train, y_train)
+            if model_type == 'NN':
+                model.fit(X_train, y_train, X_test, y_test)
+            else:
+                model.fit(X_train, y_train)
 
             y_pred = model.predict(X_test)
 
             # Save model
-            model_path = f"../models/{model_type.lower()}_{target_name.lower()}_soilgorup{soil_group}_iter{iteration}.pkl"
+            model_path = f"../models/{model_type.lower()}_{target_name.lower()}_soilgroup{soil_group}_iter{iteration}.pkl"
             #joblib.dump(model, model_path)
 
             # Save prediction and scores
+            if device == torch.device('cuda'):
+                y_test = y_test.cpu().numpy().flatten()
+            
             predictions[target_name].append(y_pred)
             rmse, r2 = evaluate_model(y_test, y_pred)
             scores[target_name].append({'iteration': iteration, 'RMSE': rmse, 'R2': r2})
@@ -153,10 +137,10 @@ def train_model(model_type, model_params, soil_group, data_folder, test_size, ra
 
 
 # Input model data
-model_type = 'SVR' # 'RF, 'NN' 'SVR' 
-model_params = {'C': 1, 'epsilon': 0.01, 'gamma': 1}
+model_type = 'NN' # 'RF, 'NN' 'SVR' 
+#model_params = {'C': 1, 'epsilon': 0.01, 'gamma': 1}
 #model_params = {'n_estimators': 100, 'random_state': 42}
-#model_params = {'input_dim': 10, 'num_layers': 3, 'hidden_dim': 64, 'batch_size': 32, 'epochs': 100, 'lr': 0.001, 'optimizer': 'adam'}
+model_params = {'input_dim': 10, 'num_layers': 3, 'hidden_dim': 64, 'batch_size': 32, 'epochs': 100, 'lr': 0.001, 'optimizer': 'Adam', 'scheduler': 'ReduceLROnPlateau', 'scheduler_params': {'factor': 0.1, 'patience': 5, 'verbose': True}}
 
 
 # Input paths
