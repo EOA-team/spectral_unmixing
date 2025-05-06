@@ -15,9 +15,29 @@ In `baresoil/soilsuite.py` the following steps are performed:
   - The samples are then clustered using their bands
   - Different numbers of clusters are tested, using silhouette score and elbow method to look at optimal cluster size
 4. The final Kmeans model is fitted and the soil groups are plotted
+  - We determined 5 groups to be enough to seperate the reflectectances and also discussed with soil scientists
+  - Plot of the clustered data: `baresoil/plots/sampled_pts_5_clusters_agri_v2.png`
 5. For each group, the 25/50/75th percentiles are determined
+  - Plot of the summarised spectra per soil group: `baresoil/plots/soil_endmembers_5_clusters_agri_v2.png`
+
+The soil clusters were then renamed:
+```
+label_map = {0: 5, 1: 2, 2: 4, 3: 1, 4: 3}
+```
+and the updated plots can be found in the foloowing plots: `baresoil/plots/sampled_pts_5_clusters_agri_v2_renamed.png`, `baresoil/plots/soil_endmembers_5_clusters_agri_v2_renamed.png`
+
+### Description of soil groups
+- Soil clusters 4 and 5 are bright soils, 1 and 2 are darker soils and cluster 3 is a medium brightness soil
+- Cluster 1 are the darkest soils, primarily found in the plateau where SOC is high and otherwise found in alpine valleys
+- Cluster 2 are medium dark soils found in the plateau, the jura and alpine valleys. They have moderate SOC in the plateau and low-moderate SOC in the jura and alpine valleys. 
+- Cluster 3 are medium bright soils with low-moderate SOC and moderate-high silt contents
+- Cluster 4 are bright soils with low SOC, mainly in the plateau and in the jura range. They have moderate clay contents
+- Cluster 5 represents the brightest soils, mainly in the plateau and characterized by low SOC and low-moderate clay contents
+
 
 All soils will be classified to these groups. The summarised spectra will serve as endmembers for generating training data for a spectral unmixing model.
+
+
 
 
 ## 2. PV and NPV endmembers
