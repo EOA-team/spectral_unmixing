@@ -57,11 +57,18 @@ In `pv_npv_members/sample_endmembers.py`
 The summarised spectra will serve as endmembers for generating training data for a spectral unmixing model.
 These can be visualised in the plots `pv_npv_members/plots/pv_npv_summary_per_cropname_*.png` and `pv_npv_members/plots/pv_npv_samples_locations_per_crop.png`
 
+
 ## 3. Spectral mixing
 
 Following the methodology in [Locher et al. (2025)](https://www.sciencedirect.com/science/article/pii/S0034425724006205?via%3Dihub#s0040):
 
 We created 1000 synthetic mixtures for each cover fraction based on the spectral library. Each synthetic mixture comprised two to three endmembers from the three cover fractions randomly sampled from the library. These were then linearly combined with random fractions assigned to each endmember class, ensuring the fractions always sum up to 1. The resulting synthetic spectrum was then added to the training dataset, with the six spectral bands as input variables and the share of the target cover fraction as the label. Additionally, we included a shade spectrum in the synthetic mixtures to represent direct and structural shade components (Shimabukuro and Smith, 1991). The shade endmember, with a near-zero reflectance of 0.01 across all bands, was treated like any other endmember during the mixing step but was not considered as target fraction.
+The pure endmemberes were also added to each dataset, and for the soil-specific datasets only the relevant soils were included.
+
+The mixing is done by providing paths to the soil, PV and NPV endmembers to the following script
+```
+python spectral_mixing/mix_spectra_composition.py
+```
 
 The synthetic mixtures (pairs of features/labels) are stored in the following way:
 ```
@@ -69,4 +76,6 @@ feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil_group_nbr}_SHADOW-TRUE
 resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil_group_nbr}_SHADOW-TRUE_RESPONSE_CLASS-00{feature_class}_ITERATION-00{i}.txt'
 ```
 
-where 0 means the global model, and the soil groups determined from the K-means clustering  are named 1 to n. There are 3 feature classes (1=NPV, 2=PV, 3=Soil). Each dataset contains 1000 mixtures, and these datasets are iterated 5 times.
+where 0 means the global model, and the soil groups determined from the K-means clustering  are named 1 to 5. There are 3 feature classes (1=NPV, 2=PV, 3=Soil). Each dataset contains 1000 mixtures, and these datasets are iterated 5 times.
+
+The resonse contains the fractions of NPV, PV, Soil and shadow. 
