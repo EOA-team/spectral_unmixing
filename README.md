@@ -9,22 +9,22 @@ In `baresoil/soilsuite.py` the following steps are performed:
 1. Download data
     - The bare soil composite is downloaded for Switzerland
 2. Sample points
-  - The data is resampled to 10m resolution from 20m
-  - 250k points that fall within Swiss borders and where MASK is 1 (presence of baresoil) are sampled
+    - The data is resampled to 10m resolution from 20m
+    - 250k points that fall within Swiss borders and where MASK is 1 (presence of baresoil) are sampled
 3. Cluster the samples
-  - The samples are then clustered using their bands
-  - Different numbers of clusters are tested, using silhouette score and elbow method to look at optimal cluster size
+    - The samples are then clustered using their bands
+    - Different numbers of clusters are tested, using silhouette score and elbow method to look at optimal cluster size
 4. The final Kmeans model is fitted and the soil groups are plotted
-  - We determined 5 groups to be enough to seperate the reflectectances and also discussed with soil scientists
-  - Plot of the clustered data: `baresoil/plots/sampled_pts_5_clusters_agri_v2.png`
+    - We determined 5 groups to be enough to seperate the reflectectances and also discussed with soil scientists
+    - Plot of the clustered data: `baresoil/plots/sampled_pts_5_clusters_agri_v2.png`
 5. For each group, the 25/50/75th percentiles are determined
-  - Plot of the summarised spectra per soil group: `baresoil/plots/soil_endmembers_5_clusters_agri_v2.png`
+    - Plot of the summarised spectra per soil group: `baresoil/plots/soil_endmembers_5_clusters_agri_v2.png`
 
 The soil clusters were then renamed:
 ```
 label_map = {0: 5, 1: 2, 2: 4, 3: 1, 4: 3}
 ```
-and the updated plots can be found in the foloowing plots: `baresoil/plots/sampled_pts_5_clusters_agri_v2_renamed.png`, `baresoil/plots/soil_endmembers_5_clusters_agri_v2_renamed.png`
+and the updated plots can be found in the following plots: `baresoil/plots/sampled_pts_5_clusters_agri_v2_renamed.png`, `baresoil/plots/soil_endmembers_5_clusters_agri_v2_renamed.png`
 
 ### Description of soil groups
 - Soil clusters 4 and 5 are bright soils, 1 and 2 are darker soils and cluster 3 is a medium brightness soil
@@ -35,8 +35,7 @@ and the updated plots can be found in the foloowing plots: `baresoil/plots/sampl
 - Cluster 5 represents the brightest soils, mainly in the plateau and characterized by low SOC and low-moderate clay contents
 
 
-All soils will be classified to these groups. The summarised spectra will serve as endmembers for generating training data for a spectral unmixing model.
-
+All soils will be classified to these groups. 
 
 
 
@@ -45,15 +44,18 @@ All soils will be classified to these groups. The summarised spectra will serve 
 Different PV (photosynthetic vegetation) and NPV (non photosynthetic vegetation) are also sampled.
 
 In `pv_npv_members/sample_endmembers.py`
-- For each year between 2019 and 2023, the top 15 crops types accoridng to pixel cound are determined based on crop maps
-- 10k location sare sampled per crop type and year
-- For each respective year, the S2 data is extracted
-  - After data cleaning (missing data, clouds, snow...), the time where the max NDVI and the min SWIR1/SWRI2 ratio occur are saved
-  - The spectra at these two points are saved as examples of PV and NPV spectra
-- For each crop type and year, the PV and NPV spectra are summarised according to the 25/50/75th percentiles
+- For each year between 2021 and 2023, we identified the top 15 crops types according to pixel count
+- We know the classification of each pixel thanks to crop maps (`pv_npv_members/crop_maps`) and we use the classification determined in `~/mnt/eo-nas1/data/landuse/documentation/LNF_code_classification_20250217.xlsx` (column "categories2024"). The crop type is thus a crop name or crop group.
+- 10k locations are sampled per crop type and year (saved in `pv_npv_members/sampled_coords`)
+- For each location, the yearly S2 data is extracted
+  - After data cleaning (missing data, clouds, snow...), we sample PV and NPV spectra if possible
+  - For PV it's when NDVI is max and SWIR ratio is min
+  - For NPV it's when NDVI and SWIR ratio are min. Additionally this must be between Jun. 1st and Nov. 15th
+- The spectra at these two moments are saved as examples of PV and NPV spectra (`pv_npv_members/pv_spectra_v2.pkl`, `pv_npv_members/npv_spectra_v2.pkl`)
+- For each crop type and year, the PV and NPV spectra are summarised according to the 25/50/75th percentiles (`pv_npv_members/summarised_npv_samples_pername.pkl`, `pv_npv_members/summarised_pv_samples_pername.pkl`)
 
 The summarised spectra will serve as endmembers for generating training data for a spectral unmixing model.
-
+These can be visualised in the plots `pv_npv_members/plots/pv_npv_summary_per_cropname_*.png` and `pv_npv_members/plots/pv_npv_samples_locations_per_crop.png`
 
 ## 3. Spectral mixing
 
