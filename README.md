@@ -79,3 +79,22 @@ resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil_group_nbr}_SHADOW-TRUE
 where 0 means the global model, and the soil groups determined from the K-means clustering  are named 1 to 5. There are 3 feature classes (1=NPV, 2=PV, 3=Soil). Each dataset contains 1000 mixtures, and these datasets are iterated 5 times.
 
 The resonse contains the fractions of NPV, PV, Soil and shadow. 
+
+
+## 4. Spectral unmixing
+
+For each class (1=NPV, 2=PV, 3=Soil), each soil group (0=global, soil specific named 1-5) and iteration, and individual model is trained on its respective dataset generated above. Predictions and results are always presented as the mean over the 5 iterations.
+
+Three models are tested: SVR, RF, NN. Hyperparameter tuning is performed with Optuna (see script for precise hyperparameter space):
+```
+python spectral_unmixing/code/tune.py
+```
+Tuning scores for each model-class-soilgroup (averaged already over the iterations) are saved in `spectral_unmixing/results/{MODELTYPE}_tuning_{CLASSNAME}_soilgroup{j}.xlsx`.
+
+The best hyperparameters are manually saved in `code/tuned_hyperparameters.csv` and all these models are trained with
+```
+python spectral_unmixing/code/train_tuned_from_csv.py
+```
+which will save each model as `spectral_unmixing/models/{MODELTYPE}_CLASS{i}_SOIL{j}_ITER{N}.pkl` and the results (RMSE, R2, MAE) in `spectral_unmixing/results/{MODELTYPE}_CLASS{i}_SOIL{j}.csv`
+
+Plots on the test set (leave-out from train set) are save in `spectral_unmixing/results/test_preds_{MODELTYPE}.png`

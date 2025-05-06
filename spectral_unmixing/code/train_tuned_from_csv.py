@@ -190,7 +190,7 @@ for model_type in hyperparams_xl.sheet_names:
             scores_df = pd.DataFrame(rows)
             print(scores_df.mean()[['RMSE', 'MAE', 'R2']])
 
-            scores_df.to_csv(f'../results/{model_type}_SOIL{soil}_CLASS{class_type}.csv', index=False)
+            scores_df.to_csv(f'../results/{model_type}_CLASS{class_type}_SOIL{soil}.csv', index=False)
 
             # TO DO: generate plots.
             mean_preds = np.mean(predictions, axis=0)  # mean of all iterations
