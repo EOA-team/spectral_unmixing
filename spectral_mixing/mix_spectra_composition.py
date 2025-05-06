@@ -4,8 +4,8 @@ import numpy as np
 
 # Open files containing endmembers
 
-pv_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/summarised_pv_samples_perlnf.pkl')
-npv_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/summarised_npv_samples_perlnf.pkl')
+pv_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/summarised_pv_samples_pername.pkl')
+npv_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/summarised_npv_samples_pername.pkl')
 soil_file = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/baresoil/summarised_soil_samples_renamed.pkl')
 
 pv_endmembers = pd.read_pickle(pv_file)
@@ -70,7 +70,7 @@ for feature in range(classes):
       response_list.append(response.tolist())  # Full compositional label
 
 
-    # Add all pure endmembers --> TO DO: add specific soil cluster
+    # Add all pure endmembers 
     for j, sp in enumerate(spectral_libraries):
         label = [0, 0, 0, 0]
         label[j] = 1  # Pure spectrum = 100% of class i
