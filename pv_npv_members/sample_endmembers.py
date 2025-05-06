@@ -35,31 +35,34 @@ def sample_locations(ds, year, lnf_mapping, n_loc=10000, n_crops=20):
 
   # Identfy the top n_crops by count 
   lnf_values = ds["lnf_code"].values
-  unique_lnf, counts = np.unique(lnf_values, return_counts=True)
+  mapped_crop_names = np.vectorize(lnf_mapping.get)(lnf_values)
+  mapped_crop_names = mapped_crop_names[mapped_crop_names != None] # codes that are not in the mapping
+  unique_crops, counts = np.unique(mapped_crop_names, return_counts=True)
   #print('Following values not in LNF codes:', [lnf for lnf in unique_lnf if lnf not in lnf_mapping])
-  unique_lnf = [lnf for lnf in unique_lnf if lnf in lnf_mapping] # drop if unique_lnf not in lnf_mapping keys
-  counts = [count for lnf, count in zip(unique_lnf, counts) if lnf in lnf_mapping]
-  top_crops = pd.DataFrame({'LNF':unique_lnf, 'Count':counts})
-  top_crops['Category'] = top_crops['LNF'].apply(lambda x: lnf_mapping[int(x)]) # convert lnf to category
-  topn_LNF = top_crops.sort_values(by='Count', ascending=False, ignore_index=True).head(n_crops).LNF.tolist()
+  #unique_lnf = [lnf for lnf in unique_lnf if lnf in lnf_mapping] # drop if unique_lnf not in lnf_mapping keys
+  counts = [count for crop, count in zip(unique_crops, counts)] # if lnf in lnf_mapping]
+  top_crops = pd.DataFrame({'Category':unique_crops, 'Count':counts})
+  #top_crops['Category'] = top_crops['LNF'].apply(lambda x: lnf_mapping[int(x)]) # convert lnf to category
+  #topn_LNF = top_crops.sort_values(by='Count', ascending=False, ignore_index=True).head(n_crops).LNF.tolist()
   topn_cat = top_crops.sort_values(by='Count', ascending=False, ignore_index=True).head(n_crops)#.Category.tolist()
   print(topn_cat)
   
-  # Sample 10k locations per croptype
+  # Sample 10k locations per crop category
   sampled_points = []
   crop_mask_df = ds["lnf_code"].to_dataframe().reset_index()
+  crop_mask_df['crop'] = crop_mask_df['lnf_code'].map(lnf_mapping)
 
-  for crop in topn_LNF:
-    print(f"Sampling points for crop: {lnf_mapping[crop]}")
+  for crop in topn_cat['Category']:
+    print(f"Sampling points for crop: {crop}")
 
-    valid_points = crop_mask_df[crop_mask_df["lnf_code"] == crop]
+    valid_points = crop_mask_df[crop_mask_df["crop"] == crop]
     
     if len(valid_points) > n_loc:
         sampled_crop_points = valid_points.sample(n_loc, random_state=42)
     else:
         sampled_crop_points = valid_points # If less than 10k, take all points
     
-    sampled_points.append(sampled_crop_points[['x', 'y', 'lnf_code']])
+    sampled_points.append(sampled_crop_points[['x', 'y', 'crop', 'lnf_code']])
 
   df = pd.concat(sampled_points, ignore_index=True)
 
@@ -178,20 +181,26 @@ def clean_dataset(ds, cloud_thresh=0.1, shadow_thresh=0.1, snow_thresh=0.1, cirr
 """ 
 data_dir = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/crop_maps') # lnf files, 10m resolution, EPSG:2056, 0 is nodata
 crop_map_files = os.listdir(data_dir)
-crop_labels = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/label_sheet_2025.csv')
+crop_labels = os.path.expanduser('~/mnt/eo-nas1/data/landuse/documentation/LNF_code_classification_20250217.xlsx')
 
-crop_names = pd.read_csv(crop_labels) # important cols: LNF_code, categories2024
-# Some categories are nan, and ikely not important crops so just drop them
-crop_names = crop_names.dropna(subset="categories2024")
+crop_names = pd.read_excel(crop_labels, sheet_name=1) # important cols: LNF_code, categories2024
+
 # Drop some categories
-to_drop = ['Biodiversity promotion area', 'Fallow', 'Fallow extensive', 'Field margin', 'Flowerstrips', 'Waters', 'Walls', 'Paths natural', \
-   'Forest Pasture', 'Riverside meadows', 'Permanent green area other', 'Tree Crop', 'Special cultures', 'Hedge', 'Forest', \
-  'Greenhouses', 'Greenhause', 'Greenhouse',  'Non agriculture', 'Gardens', 'Vines', 'Apples', 'Pears', 'StoneFruit', 'Chestnut', 'Permaculture', \
-    'Orchards other', 'Special cultrues', 'Asparagus', 'Berries'] 
-#'Pasture', 'Pasture extensiv', 'Summering Pasture', 'Summering Meadow', 'Summering Meadow Extensive', 'Meadow', 'Meadow extensiv', 'Meadow permanent',
+to_drop = ['Apples', 'Asparagus', 'Berries', 'Biodiversity promotion area', 'Chestnut', 'Fallow', 'Fallow extensive', 'Field margin',\
+          'Flowerstrips', 'Forest', 'Forest Pasture', 'Gardens', 'Greenhouses', 'Greenhouse', 'Hedge', 'Non agriculture', 'Nurseries',\
+          'Orchards', 'Orchards other', 'Other', 'Other indoor', 'Paths natural', 'Pears', 'Permaculture', 'Special cultures', 'Tree Crop',\
+          'Vines'] 
 crop_names = crop_names[~crop_names.categories2024.isin(to_drop)]
 
+# Group up some labels
+crop_names.loc[crop_names.categories2024.isin(['Meadow', 'Meadow extensiv', 'Meadow other', 'Meadow permanent', 'Meadow sown', 'Summering Meadow', 'Summering Meadow Extensiv']), 'categories2024'] = 'Grassland'
+crop_names.loc[crop_names.categories2024.isin(['Pasture', 'Pasture extensiv', 'Summering Pasture']), 'categories2024'] = 'Grassland'
+crop_names.loc[crop_names.categories2024.isin(['Wheat feed']), 'categories2024'] = 'Winter Wheat'
+crop_names.loc[crop_names.categories2024.isin(['Beets']), 'categories2024'] = 'Sugar beets'
+
+# Create mapping from LNF code to crop category
 lnf_mapping = dict(zip(crop_names["LNF_code"], crop_names["categories2024"]))
+
 
 n_loc=10000
 n_crops=15
@@ -201,7 +210,7 @@ for f in crop_map_files:
   print(f'----Sampling locations for {year}----')
 
   ds = rioxarray.open_rasterio(os.path.join(data_dir, f)).to_dataset("band").rename({1:"lnf_code"}) # places the coords in the center of pixels
-
+  
   # Shift to topleft
   dx = abs(ds.x[1] - ds.x[0])  
   dy = abs(ds.y[1] - ds.y[0]) 
@@ -226,6 +235,7 @@ for f in crop_map_files:
 
   sample_locations(ds, year, lnf_mapping, n_loc=n_loc, n_crops=n_crops)
 """
+
 
 ###########
 # 1.B Analyse sampled coords
@@ -259,7 +269,7 @@ for f in coords_files:
 
 ############
 # 2. Find S2 files
-"""
+""" 
 crop_map_dir = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/crop_maps') # lnf files, 10m resolution, EPSG:2056, 0 is nodata
 crop_map_files = os.listdir(crop_map_dir)
 years = ['2021', '2022', '2023'] #[f.split('_')[-1].split('.tif')[0] for f in crop_map_files]
@@ -295,18 +305,18 @@ for yr in years:
   # Don't consider the border of the cube
   gdf_zarr_yr['geometry'] = gdf_zarr_yr['geometry'].buffer(-10)
   # Intersect: find files for the coords that yr
-  tiles_to_keep = coords_gdf.sjoin(gdf_zarr_yr, how='inner')#
+  tiles_to_keep = coords_gdf.sjoin(gdf_zarr_yr, how='inner')
 
   # Special case: coord is on cube border (2 cubes will intersect), keep only one cube 
   #tiles_to_keep = tiles_to_keep[tiles_to_keep.x < tiles_to_keep.minx+1280]
   #tiles_to_keep = tiles_to_keep[tiles_to_keep.y > tiles_to_keep.maxy-1280]
 
-  filtered_files.append(tiles_to_keep[['x', 'y', 'lnf_code', 'file', 'yr', 'geometry']])
+  filtered_files.append(tiles_to_keep[['x', 'y', 'lnf_code', 'crop', 'file', 'yr', 'geometry']])
 
 # Save info on: files, coord, lnf code, year
 filtered_files = pd.concat(filtered_files, ignore_index=True)
 filtered_files.to_pickle('s2_files_to_sample.pkl')
-""" 
+"""
 
 ################
 # 3. Extract S2 data
@@ -323,57 +333,63 @@ unique_files =unique_files[start_file:]
 n_files = len(unique_files)
 print(f'There are {len(unique_files)} files to sample data from')
 
-
 manager = multiprocessing.Manager()  
 lock = manager.Lock()  # Cross-process lock
 all_pv = manager.list()  # Shared list
 all_npv = manager.list()  # Shared list
 
 def process_file(f):
+    try:
+      # Get coords to sample in that file
+      pts = filtered_files[filtered_files.file==f]
+      
+      # Open cube
+      ds = xr.open_zarr(os.path.join(s2_dir, f))
+      yr = f.split('_')[-1][:4]
 
-    # Get coords to sample in that file
-    pts = filtered_files[filtered_files.file==f]
-    
-    # Open cube
-    ds = xr.open_zarr(os.path.join(s2_dir, f))
-    yr = f.split('_')[-1][:4]
+      # Filter clouds and baddata
+      ds = clean_dataset(ds, cloud_thresh=0.1, snow_thresh=0, shadow_thresh=0.1, cirrus_thresh=800) #drop where any band 65535, clouds, snow, ...
 
-    # Filter clouds and baddata
-    ds = clean_dataset(ds, cloud_thresh=0.1, snow_thresh=0, shadow_thresh=0.1, cirrus_thresh=800) #drop where any band 65535, clouds, snow, ...
+      # For each sample, create feature space (NDVI and SWIR ratio)
+      samples = ds.sel(lon=xr.DataArray(pts.x.values), lat=xr.DataArray(pts.y.values))
+      #samples = samples.assign_coords(crop_type=("crop", pts["lnf_code"].values)) # Add crop type
+      samples['lnf_code'] = (("dim_0",), pts["lnf_code"].values)
+      samples['crop'] = (("dim_0",), pts["crop"].values)
+      bands =  ['s2_B02', 's2_B03', 's2_B04', 's2_B05', 's2_B06', 's2_B07', 's2_B08', 's2_B8A', 's2_B11', 's2_B12']
+      samples[bands] = samples[bands].where(samples[bands].compute() != 65535, np.nan) 
+      samples['NDVI'] = (samples['s2_B08'] - samples['s2_B04'])/(samples['s2_B04'] + samples['s2_B08'])
+      samples['SWIR_ratio'] = (samples['s2_B12']/samples['s2_B11'])
 
-    # For each sample, create feature space (NDVI and SWIR ratio)
-    samples = ds.sel(lon=xr.DataArray(pts.x.values), lat=xr.DataArray(pts.y.values))
-    #samples = samples.assign_coords(crop_type=("crop", pts["lnf_code"].values)) # Add crop type
-    samples['crop_type'] = (("dim_0",), pts["lnf_code"].values)
-    bands =  ['s2_B02', 's2_B03', 's2_B04', 's2_B05', 's2_B06', 's2_B07', 's2_B08', 's2_B8A', 's2_B11', 's2_B12']
-    samples[bands] = samples[bands].where(samples[bands].compute() != 65535, np.nan) 
-    samples['NDVI'] = (samples['s2_B08'] - samples['s2_B04'])/(samples['s2_B04'] + samples['s2_B08'])
-    samples['SWIR_ratio'] = (samples['s2_B12']/samples['s2_B11'])
+      pv_spectra = None
+      npv_spectra = None
 
-    
-    valid_times = samples.where(samples['NDVI'] > 0.1)['NDVI'].notnull().any(dim=['dim_0']).values.nonzero()[0]
-    if len(valid_times):
-      samples = samples.isel(time=valid_times)
+      valid_times = samples.where(samples['NDVI'] > 0.1)['NDVI'].notnull().any(dim=['dim_0']).values.nonzero()[0]
+      if len(valid_times):
+        samples = samples.isel(time=valid_times)
 
-      # PV selection: Highest NDVI & Lowest SWIR_ratio --> use percentiles since the feature space might not be exactly triangular
-      try:
-        pv_candidates = samples.where(samples['NDVI'].compute() >= samples['NDVI'].quantile(0.7, dim='time').compute(), drop=True)
-        pv_best = pv_candidates.where(pv_candidates['SWIR_ratio'].compute() == pv_candidates['SWIR_ratio'].min().compute(), drop=True)
-        pv_spectra = pv_best.to_dataframe().reset_index().dropna()[bands+['lat', 'lon', 'time', 'crop_type']]
-      except:
-        pv_spectra = None
+        # PV selection: Highest NDVI & Lowest SWIR_ratio --> use percentiles since the feature space might not be exactly triangular
+        try:
+          pv_candidates = samples.where(samples['NDVI'].compute() >= samples['NDVI'].quantile(0.7, dim='time').compute(), drop=True)
+          pv_best = pv_candidates.where(pv_candidates['SWIR_ratio'].compute() == pv_candidates['SWIR_ratio'].min().compute(), drop=True)
+          pv_spectra = pv_best.to_dataframe().reset_index().dropna()[bands+['lat', 'lon', 'time', 'lnf_code', 'crop']]
+        except:
+          pv_spectra = None
 
-      # NPV selection: Lowest NDVI & Lowest SWIR_ratio --> use percentiles since the feature space might not be exactly triangular
-      try:
-        npv_candidates = samples.where(samples['NDVI'].compute() <= samples['NDVI'].quantile(0.3, dim='time').compute(), drop=True)
-        yr = str(samples.time.values[0].astype('datetime64[Y]'))
-        npv_candidates = npv_candidates.where((npv_candidates['time'] >= np.datetime64(f'{yr}-06-01')) & (npv_candidates['time'] <= np.datetime64(f'{yr}-11-15')), drop=True) # between 1st June and 15 Nov
-        npv_best = npv_candidates.where(npv_candidates['SWIR_ratio'].compute()  == npv_candidates['SWIR_ratio'].min().compute(), drop=True)
-        npv_spectra = npv_best.to_dataframe().reset_index().dropna()[bands+['lat', 'lon', 'time', 'crop_type']]
-      except:
-        npv_spectra = None
+        # NPV selection: Lowest NDVI & Lowest SWIR_ratio --> use percentiles since the feature space might not be exactly triangular
+        try:
+          npv_candidates = samples.where(samples['NDVI'].compute() <= samples['NDVI'].quantile(0.3, dim='time').compute(), drop=True)
+          yr = str(samples.time.values[0].astype('datetime64[Y]'))
+          npv_candidates = npv_candidates.where((npv_candidates['time'] >= np.datetime64(f'{yr}-06-01')) & (npv_candidates['time'] <= np.datetime64(f'{yr}-11-15')), drop=True) # between 1st June and 15 Nov
+          npv_best = npv_candidates.where(npv_candidates['SWIR_ratio'].compute()  == npv_candidates['SWIR_ratio'].min().compute(), drop=True)
+          npv_spectra = npv_best.to_dataframe().reset_index().dropna()[bands+['lat', 'lon', 'time', 'lnf_code', 'crop']]
+        except:
+          npv_spectra = None
 
-    return pv_spectra, npv_spectra
+      return pv_spectra, npv_spectra
+
+    except Exception as e:
+      print(f"Error processing file {f}: {e}")
+      return None, None
 
 
 with ProcessPoolExecutor(max_workers=8) as executor:
@@ -390,9 +406,9 @@ with ProcessPoolExecutor(max_workers=8) as executor:
           
        
           if len(all_pv):
-            pd.concat(list(all_pv), ignore_index=True).to_pickle('pv_spectra.pkl')
+            pd.concat(list(all_pv), ignore_index=True).to_pickle('pv_spectra_v2.pkl')
           if len(all_npv):
-            pd.concat(list(all_npv), ignore_index=True).to_pickle('npv_spectra.pkl')
+            pd.concat(list(all_npv), ignore_index=True).to_pickle('npv_spectra_v2.pkl')
           
           if pv_spectra is not None:
             print(f'--Saved PV spectra from file {i+1}/{n_files}--')
@@ -400,38 +416,38 @@ with ProcessPoolExecutor(max_workers=8) as executor:
             print(f'--Saved NPV spectra from file {i+1}/{n_files}--')
 
 """
-
-
 ################
 # 4a. Plot the locations that were sampled and what crops they are
-""" 
-df_pv = pd.read_pickle('pv_spectra.pkl')
-df_npv = pd.read_pickle('npv_spectra.pkl')
+"""
+df_pv = pd.read_pickle('pv_spectra_v2.pkl')
+df_npv = pd.read_pickle('npv_spectra_v2.pkl')
 
 gdf_pv = gpd.GeoDataFrame(df_pv, geometry=gpd.points_from_xy(df_pv.lon, df_pv.lat), crs=32632)
 gdf_npv = gpd.GeoDataFrame(df_npv, geometry=gpd.points_from_xy(df_npv.lon, df_npv.lat), crs=32632)
+"""
+# Check number of PV and NPV per crop, and difference
+""" 
+pv_gb = gdf_pv.groupby('crop').count().lat.reset_index().rename({'lat':'count'}, axis=1)
+npv_gb = gdf_npv.groupby('crop').count().lat.reset_index().rename({'lat':'count'}, axis=1)
+pv_gb = pv_gb.merge(npv_gb, on='crop', how='outer', suffixes=('_pv', '_npv'))
+pv_gb['diff'] = pv_gb['count_pv'] - pv_gb['count_npv']
+print(pv_gb)
+"""
 
-crop_labels = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/label_sheet_2025.csv')
-crop_names = pd.read_csv(crop_labels) 
-crop_names = crop_names.dropna(subset="categories2024")
-lnf_mapping = dict(zip(crop_names["LNF_code"], crop_names["categories2024"]))
-
-gdf_pv['crop_name'] = gdf_pv['crop_type'].map(lnf_mapping)
-gdf_npv['crop_name'] = gdf_npv['crop_type'].map(lnf_mapping)
-
+"""
 fig, axs = plt.subplots(nrows=1, ncols=2, figsize=(15, 10))
 
 # Get unique crop names and assign them colors from tab20
-unique_crops = sorted(set(gdf_pv['crop_name'].unique()) | set(gdf_npv['crop_name'].unique()))
+unique_crops = sorted(set(gdf_pv['crop'].unique()) | set(gdf_npv['crop'].unique()))
 cmap = plt.get_cmap('tab20')
 colors = {crop: cmap(i % 20) for i, crop in enumerate(unique_crops)}
 
 
-gdf_pv.plot(ax=axs[0], column='crop_name', markersize=1, color=gdf_pv['crop_name'].map(colors))
+gdf_pv.plot(ax=axs[0], column='crop', markersize=1, color=gdf_pv['crop'].map(colors))
 cx.add_basemap(axs[0], crs=gdf_pv.crs, source=cx.providers.SwissFederalGeoportal.NationalMapColor)
 axs[0].set_title('PV samples')
 
-gdf_npv.plot(ax=axs[1], column='crop_name', markersize=1, color=gdf_npv['crop_name'].map(colors))
+gdf_npv.plot(ax=axs[1], column='crop', markersize=1, color=gdf_npv['crop'].map(colors))
 cx.add_basemap(axs[1], crs=gdf_npv.crs, source=cx.providers.SwissFederalGeoportal.NationalMapColor)
 axs[1].set_title('NPV samples')
 
@@ -442,29 +458,19 @@ sns.move_legend(axs[1], "upper left", bbox_to_anchor=(1, 1))
 
 plt.tight_layout()
 plt.savefig('plots/pv_npv_samples_locations.png')
-"""
 
-"""
-## PLot each crop on its own subplot
 
-df_pv = pd.read_pickle('pv_spectra.pkl')
-df_npv = pd.read_pickle('npv_spectra.pkl')
+
+## Plot each crop on its own subplot
+
+df_pv = pd.read_pickle('pv_spectra_v2.pkl')
+df_npv = pd.read_pickle('npv_spectra_v2.pkl')
 
 gdf_pv = gpd.GeoDataFrame(df_pv, geometry=gpd.points_from_xy(df_pv.lon, df_pv.lat), crs=32632)
 gdf_npv = gpd.GeoDataFrame(df_npv, geometry=gpd.points_from_xy(df_npv.lon, df_npv.lat), crs=32632)
 
-crop_labels = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/label_sheet_2025.csv')
-crop_names = pd.read_csv(crop_labels) 
-crop_names = crop_names.dropna(subset="categories2024")
-lnf_mapping = dict(zip(crop_names["LNF_code"], crop_names["categories2024"]))
-
-gdf_pv['crop_name'] = gdf_pv['crop_type'].map(lnf_mapping)
-gdf_npv['crop_name'] = gdf_npv['crop_type'].map(lnf_mapping)
-
-
-
 # Get unique crop names and assign them colors from tab20
-unique_crops = sorted(set(gdf_pv['crop_name'].unique()) | set(gdf_npv['crop_name'].unique()))
+unique_crops = sorted(set(gdf_pv['crop'].unique()) | set(gdf_npv['crop'].unique()))
 cmap = plt.get_cmap('tab20')
 colors = {crop: cmap(i % 20) for i, crop in enumerate(unique_crops)}
 
@@ -474,8 +480,8 @@ minx, miny, maxx, maxy = gdf_pv.total_bounds
 
 for i, crop in enumerate(unique_crops):
     # Filter data for the current crop type
-    gdf_pv_filtered = gdf_pv[gdf_pv['crop_name'] == crop]
-    gdf_npv_filtered = gdf_npv[gdf_npv['crop_name'] == crop]
+    gdf_pv_filtered = gdf_pv[gdf_pv['crop'] == crop]
+    gdf_npv_filtered = gdf_npv[gdf_npv['crop'] == crop]
 
     # Plot PV spectra (first column)
     axs[i, 0].set_xlim(minx, maxx)
@@ -496,24 +502,18 @@ plt.tight_layout()
 plt.savefig('plots/pv_npv_samples_locations_percrop.png')
 
 """
-
 ################
-# 4b. Summarise and plot spectra --> PER LNF CODE
+# 4b. Summarise and plot spectra -->  PER CROP NAME
 
-crop_labels = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/label_sheet_2025.csv')
-crop_names = pd.read_csv(crop_labels) 
-crop_names = crop_names.dropna(subset="categories2024")
-lnf_mapping = dict(zip(crop_names["LNF_code"], crop_names["categories2024"]))
-
-pv_spectra = pd.read_pickle('pv_spectra.pkl')
-npv_spectra = pd.read_pickle('npv_spectra.pkl')
+pv_spectra = pd.read_pickle('pv_spectra_v2.pkl')
+npv_spectra = pd.read_pickle('npv_spectra_v2.pkl')
 
 # Drop duplicates (sometimes there are 2 images for one timestamp and both were kept)
 pv_spectra = pv_spectra.drop_duplicates(subset=['lat', 'lon', 'time'])
 npv_spectra = npv_spectra.drop_duplicates(subset=['lat', 'lon', 'time'])
 
 # Drop invalid data (too low reflectances) in pastures (LNF code 933)
-pv_spectra = pv_spectra[pv_spectra.crop_type != 933]
+#pv_spectra = pv_spectra[pv_spectra.crop_type != 933]
 
 # Add year data
 pv_spectra['yr'] = pv_spectra['time'].apply(lambda x: x.year)
@@ -521,14 +521,14 @@ npv_spectra['yr'] = npv_spectra['time'].apply(lambda x: x.year)
 
 # For crop and year, compute 25/50/75 percentiles
 bands = ['s2_B02','s2_B03','s2_B04', 's2_B05','s2_B06','s2_B07', 's2_B08', 's2_B8A', 's2_B11', 's2_B12']  
-pv_crop_year = pv_spectra.groupby(['crop_type', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
-npv_crop_year = npv_spectra.groupby(['crop_type', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
+pv_crop_year = pv_spectra.groupby(['crop', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
+npv_crop_year = npv_spectra.groupby(['crop', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
+
 
 # Save summarised spectra
-pv_crop_year.reset_index().to_pickle('summarised_pv_samples_perlnf.pkl')
-npv_crop_year.reset_index().to_pickle('summarised_npv_samples_perlnf.pkl')
+pv_crop_year.reset_index().to_pickle('summarised_pv_samples_pername.pkl')#npv_crop_year.reset_index().to_pickle('summarised_npv_samples_pername.pkl')
 
-"""
+
 # Plot per year
 for yr in range(2021,2024):
     pv_crop_year = pv_crop_year.reset_index()
@@ -536,17 +536,17 @@ for yr in range(2021,2024):
     npv_crop_year = npv_crop_year.reset_index()
     npv_crop = npv_crop_year[npv_crop_year.yr ==yr].drop('yr', axis=1).rename({'level_2':'percentile'}, axis=1)
 
-    lnfs = pd.unique(pv_crop.crop_type).tolist()
-    pv_crop = pv_crop[pv_crop.crop_type.isin(lnfs)]
-    lnfs = pd.unique(npv_crop.crop_type).tolist()
-    npv_crop = npv_crop[npv_crop.crop_type.isin(lnfs)]
+    lnfs = pd.unique(pv_crop.crop).tolist()#[:3]
+    pv_crop = pv_crop[pv_crop.crop.isin(lnfs)]
+    lnfs = pd.unique(npv_crop.crop).tolist()#[:3]
+    npv_crop = npv_crop[npv_crop.crop.isin(lnfs)]
 
     wvl = [490,560,665,705,740,783,842,865,1610,2190]
     band_to_wvl = dict(zip(bands, wvl))
 
-    summary_pv = pv_crop.melt(id_vars=['crop_type', 'percentile'], var_name='band', value_name='reflectance')
+    summary_pv = pv_crop.melt(id_vars=['crop', 'percentile'], var_name='band', value_name='reflectance')
     summary_pv['wavelength'] = summary_pv['band'].map(band_to_wvl)
-    summary_npv = npv_crop.melt(id_vars=['crop_type', 'percentile'], var_name='band', value_name='reflectance')
+    summary_npv = npv_crop.melt(id_vars=['crop', 'percentile'], var_name='band', value_name='reflectance')
     summary_npv['wavelength'] = summary_npv['band'].map(band_to_wvl)
 
     # All crops on one plot
@@ -556,7 +556,7 @@ for yr in range(2021,2024):
         data=summary_pv, 
         x='wavelength', 
         y='reflectance', 
-        hue='crop_type',  # Different colors per cluster
+        hue='crop',  # Different colors per cluster
         style='percentile',  # Different line styles for quantiles
         markers=True,  # Adds markers for better readability
         dashes=True,  # Uses dashed lines for differentiation
@@ -571,7 +571,147 @@ for yr in range(2021,2024):
         data=summary_npv, 
         x='wavelength', 
         y='reflectance', 
-        hue='crop_type',  # Different colors per cluster
+        hue='crop',  # Different colors per cluster
+        style='percentile',  # Different line styles for quantiles
+        markers=True,  # Adds markers for better readability
+        dashes=True,  # Uses dashed lines for differentiation
+        palette='Set1'
+    )
+    axs[1].set_title(f'NPV endmembers for {yr}')
+    axs[1].set_ylim(0,8000)
+    sns.move_legend(axs[1], "upper left", bbox_to_anchor=(1, 1))
+
+    plt.savefig(f'plots/pv_npv_summary_{yr}_cropnames.png')
+
+
+
+    # PLOT EACH CROP SEPERATELY
+
+    crop_types = pd.unique(pv_crop['crop']) if len(pd.unique(pv_crop['crop'])) > len(pd.unique(npv_crop['crop'])) else pd.unique(npv_crop['crop'])
+
+    # Create a 2-column grid with rows corresponding to each crop type
+    f, axs = plt.subplots(len(crop_types), 2, figsize=(16, 3 * len(crop_types)))
+
+    # Iterate through each crop type and plot PV and NPV spectra in each row
+    for i, crop in enumerate(crop_types):
+        # Filter data for the current crop type
+        pv_crop_filtered = summary_pv[summary_pv['crop'] == crop]
+        npv_crop_filtered = summary_npv[summary_npv['crop'] == crop]
+        
+        # Plot PV spectra (first column)
+        sns.lineplot(
+            ax=axs[i, 0],
+            data=pv_crop_filtered,
+            x='wavelength',
+            y='reflectance',
+            style='percentile',  # Different line styles for quantiles
+            markers=True,
+            dashes=True,
+            palette='Set2'
+        )
+        
+        axs[i, 0].set_title(f'PV endmembers for {crop}')
+        axs[i, 0].set_ylim(0, 6000)
+        
+        # Plot NPV spectra (second column)
+        sns.lineplot(
+            ax=axs[i, 1],
+            data=npv_crop_filtered,
+            x='wavelength',
+            y='reflectance',
+            style='percentile',  # Different line styles for quantiles
+            markers=True,
+            dashes=True,
+            palette='Set2'
+        )
+        axs[i, 1].set_title(f'NPV endmembers for {crop}')
+        axs[i, 1].set_ylim(0, 6000)
+
+    # Adjust layout to prevent overlap
+    plt.tight_layout()
+    plt.savefig(f'plots/pv_npv_summary_per_cropname_{yr}.png')
+
+
+################ TO DO: delete or chgange the label sheet
+# 4b. Summarise and plot spectra --> PER LNF CODE
+"""  
+crop_labels = os.path.expanduser('~/mnt/eo-nas1/data/landuse/documentation/LNF_code_classification_20250217.xlsx')
+crop_names = pd.read_excel(crop_labels, sheet_name=1) # important cols: LNF_code, categories2024
+# Group up some labels
+crop_names.loc[crop_names.categories2024.isin(['Meadow', 'Meadow extensiv', 'Meadow other', 'Meadow permanent', 'Meadow sown', 'Summering Meadow']), 'categories2024'] = 'Meadow'
+crop_names.loc[crop_names.categories2024.isin(['Pasture', 'Pasture extensiv', 'Summering Pasture']), 'categories2024'] = 'Pasture'
+crop_names.loc[crop_names.categories2024.isin(['Summer Wheat', 'Wheat feed']), 'categories2024'] = 'Summer Wheat'
+# Create mapping from LNF code to crop category
+lnf_mapping = dict(zip(crop_names["LNF_code"], crop_names["categories2024"]))
+
+pv_spectra = pd.read_pickle('pv_spectra.pkl')
+npv_spectra = pd.read_pickle('npv_spectra.pkl')
+
+# Drop duplicates (sometimes there are 2 images for one timestamp and both were kept)
+pv_spectra = pv_spectra.drop_duplicates(subset=['lat', 'lon', 'time'])
+npv_spectra = npv_spectra.drop_duplicates(subset=['lat', 'lon', 'time'])
+
+# Drop invalid data (too low reflectances) in pastures (LNF code 933)
+#pv_spectra = pv_spectra[pv_spectra.crop_type != 933]
+
+# Add year data
+pv_spectra['yr'] = pv_spectra['time'].apply(lambda x: x.year)
+npv_spectra['yr'] = npv_spectra['time'].apply(lambda x: x.year)
+
+# For crop and year, compute 25/50/75 percentiles
+bands = ['s2_B02','s2_B03','s2_B04', 's2_B05','s2_B06','s2_B07', 's2_B08', 's2_B8A', 's2_B11', 's2_B12']  
+pv_crop_year = pv_spectra.groupby(['lnf_code', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
+npv_crop_year = npv_spectra.groupby(['lnf_code', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
+
+# Save summarised spectra
+pv_crop_year.reset_index().to_pickle('summarised_pv_samples_perlnf.pkl')
+npv_crop_year.reset_index().to_pickle('summarised_npv_samples_perlnf.pkl')
+
+
+
+# Plot per year
+for yr in range(2021,2024):
+    pv_crop_year = pv_crop_year.reset_index()
+    pv_crop = pv_crop_year[pv_crop_year.yr ==yr].drop('yr', axis=1).rename({'level_2':'percentile'}, axis=1)
+    npv_crop_year = npv_crop_year.reset_index()
+    npv_crop = npv_crop_year[npv_crop_year.yr ==yr].drop('yr', axis=1).rename({'level_2':'percentile'}, axis=1)
+
+    lnfs = pd.unique(pv_crop.lnf_code).tolist()
+    pv_crop = pv_crop[pv_crop.lnf_code.isin(lnfs)]
+    lnfs = pd.unique(npv_crop.lnf_code).tolist()
+    npv_crop = npv_crop[npv_crop.lnf_code.isin(lnfs)]
+
+    wvl = [490,560,665,705,740,783,842,865,1610,2190]
+    band_to_wvl = dict(zip(bands, wvl))
+
+    summary_pv = pv_crop.melt(id_vars=['lnf_code', 'percentile'], var_name='band', value_name='reflectance')
+    summary_pv['wavelength'] = summary_pv['band'].map(band_to_wvl)
+    summary_npv = npv_crop.melt(id_vars=['lnf_code', 'percentile'], var_name='band', value_name='reflectance')
+    summary_npv['wavelength'] = summary_npv['band'].map(band_to_wvl)
+
+    # All crops on one plot
+    f, axs = plt.subplots(1,2,figsize=(16, 5))
+    sns.lineplot(
+        ax=axs[0],
+        data=summary_pv, 
+        x='wavelength', 
+        y='reflectance', 
+        hue='lnf_code',  # Different colors per cluster
+        style='percentile',  # Different line styles for quantiles
+        markers=True,  # Adds markers for better readability
+        dashes=True,  # Uses dashed lines for differentiation
+        palette='Set1'
+    )
+    axs[0].set_title(f'PV endmembers for {yr}')
+    axs[0].set_ylim(0,8000)
+    axs[0].legend_.set_visible(False)
+
+    sns.lineplot(
+        ax=axs[1],
+        data=summary_npv, 
+        x='wavelength', 
+        y='reflectance', 
+        hue='lnf_code',  # Different colors per cluster
         style='percentile',  # Different line styles for quantiles
         markers=True,  # Adds markers for better readability
         dashes=True,  # Uses dashed lines for differentiation
@@ -587,7 +727,7 @@ for yr in range(2021,2024):
 
     # PLOT EACH CROP SEPERATELY
 
-    crop_types = pd.unique(pv_crop['crop_type']) if len(pd.unique(pv_crop['crop_type'])) > len(pd.unique(npv_crop['crop_type'])) else pd.unique(npv_crop['crop_type'])
+    crop_types = pd.unique(pv_crop['lnf_code']) if len(pd.unique(pv_crop['lnf_code'])) > len(pd.unique(npv_crop['lnf_code'])) else pd.unique(npv_crop['lnf_code'])
 
     # Create a 2-column grid with rows corresponding to each crop type
     f, axs = plt.subplots(len(crop_types), 2, figsize=(16, 3 * len(crop_types)))
@@ -595,8 +735,8 @@ for yr in range(2021,2024):
     # Iterate through each crop type and plot PV and NPV spectra in each row
     for i, crop in enumerate(crop_types):
         # Filter data for the current crop type
-        pv_crop_filtered = summary_pv[summary_pv['crop_type'] == crop]
-        npv_crop_filtered = summary_npv[summary_npv['crop_type'] == crop]
+        pv_crop_filtered = summary_pv[summary_pv['lnf_code'] == crop]
+        npv_crop_filtered = summary_npv[summary_npv['lnf_code'] == crop]
 
         crop_name = lnf_mapping[crop]
         
@@ -632,145 +772,4 @@ for yr in range(2021,2024):
     # Adjust layout to prevent overlap
     plt.tight_layout()
     plt.savefig(f'plots/pv_npv_summary_per_lnf_{yr}.png')
-"""
-
-
-################
-# 4b. Summarise and plot spectra --> PER CROP NAME
 """ 
-crop_labels = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/label_sheet_2025.csv')
-crop_names = pd.read_csv(crop_labels) 
-crop_names = crop_names.dropna(subset="categories2024")
-lnf_mapping = dict(zip(crop_names["LNF_code"], crop_names["categories2024"]))
-
-pv_spectra = pd.read_pickle('pv_spectra.pkl')
-npv_spectra = pd.read_pickle('npv_spectra.pkl')
-
-# Drop duplicates (sometimes there are 2 images for one timestamp and both were kept)
-pv_spectra = pv_spectra.drop_duplicates(subset=['lat', 'lon', 'time'])
-npv_spectra = npv_spectra.drop_duplicates(subset=['lat', 'lon', 'time'])
-
-# Drop invalid data (too low reflectances) in pastures (LNF code 933)
-pv_spectra = pv_spectra[pv_spectra.crop_type != 933]
-
-# Convert lnf codes to crop names
-pv_spectra['crop_type'] = pv_spectra['crop_type'].map(lnf_mapping)
-npv_spectra['crop_type'] = npv_spectra['crop_type'].map(lnf_mapping)
-
-# Add year data
-pv_spectra['yr'] = pv_spectra['time'].apply(lambda x: x.year)
-npv_spectra['yr'] = npv_spectra['time'].apply(lambda x: x.year)
-
-# For crop and year, compute 25/50/75 percentiles
-bands = ['s2_B02','s2_B03','s2_B04', 's2_B05','s2_B06','s2_B07', 's2_B08', 's2_B8A', 's2_B11', 's2_B12']  
-pv_crop_year = pv_spectra.groupby(['crop_type', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
-npv_crop_year = npv_spectra.groupby(['crop_type', 'yr'])[bands].quantile([0.25, 0.50, 0.75])
-
-
-# Save summarised spectra
-#pv_crop_year.reset_index().to_pickle('summarised_pv_samples_pername.pkl')
-#npv_crop_year.reset_index().to_pickle('summarised_npv_samples_pername.pkl')
-
-
-# Plot per year
-for yr in range(2021,2024):
-    pv_crop_year = pv_crop_year.reset_index()
-    pv_crop = pv_crop_year[pv_crop_year.yr ==yr].drop('yr', axis=1).rename({'level_2':'percentile'}, axis=1)
-    npv_crop_year = npv_crop_year.reset_index()
-    npv_crop = npv_crop_year[npv_crop_year.yr ==yr].drop('yr', axis=1).rename({'level_2':'percentile'}, axis=1)
-
-    lnfs = pd.unique(pv_crop.crop_type).tolist()#[:3]
-    pv_crop = pv_crop[pv_crop.crop_type.isin(lnfs)]
-    lnfs = pd.unique(npv_crop.crop_type).tolist()#[:3]
-    npv_crop = npv_crop[npv_crop.crop_type.isin(lnfs)]
-
-    wvl = [490,560,665,705,740,783,842,865,1610,2190]
-    band_to_wvl = dict(zip(bands, wvl))
-
-    summary_pv = pv_crop.melt(id_vars=['crop_type', 'percentile'], var_name='band', value_name='reflectance')
-    summary_pv['wavelength'] = summary_pv['band'].map(band_to_wvl)
-    summary_npv = npv_crop.melt(id_vars=['crop_type', 'percentile'], var_name='band', value_name='reflectance')
-    summary_npv['wavelength'] = summary_npv['band'].map(band_to_wvl)
-
-    # All crops on one plot
-    f, axs = plt.subplots(1,2,figsize=(16, 5))
-    sns.lineplot(
-        ax=axs[0],
-        data=summary_pv, 
-        x='wavelength', 
-        y='reflectance', 
-        hue='crop_type',  # Different colors per cluster
-        style='percentile',  # Different line styles for quantiles
-        markers=True,  # Adds markers for better readability
-        dashes=True,  # Uses dashed lines for differentiation
-        palette='Set1'
-    )
-    axs[0].set_title(f'PV endmembers for {yr}')
-    axs[0].set_ylim(0,8000)
-    axs[0].legend_.set_visible(False)
-
-    sns.lineplot(
-        ax=axs[1],
-        data=summary_npv, 
-        x='wavelength', 
-        y='reflectance', 
-        hue='crop_type',  # Different colors per cluster
-        style='percentile',  # Different line styles for quantiles
-        markers=True,  # Adds markers for better readability
-        dashes=True,  # Uses dashed lines for differentiation
-        palette='Set1'
-    )
-    axs[1].set_title(f'NPV endmembers for {yr}')
-    axs[1].set_ylim(0,8000)
-    sns.move_legend(axs[1], "upper left", bbox_to_anchor=(1, 1))
-
-    plt.savefig(f'plots/pv_npv_summary_{yr}_cropnames.png')
-
-
-
-    # PLOT EACH CROP SEPERATELY
-
-    crop_types = pd.unique(pv_crop['crop_type']) if len(pd.unique(pv_crop['crop_type'])) > len(pd.unique(npv_crop['crop_type'])) else pd.unique(npv_crop['crop_type'])
-
-    # Create a 2-column grid with rows corresponding to each crop type
-    f, axs = plt.subplots(len(crop_types), 2, figsize=(16, 3 * len(crop_types)))
-
-    # Iterate through each crop type and plot PV and NPV spectra in each row
-    for i, crop in enumerate(crop_types):
-        # Filter data for the current crop type
-        pv_crop_filtered = summary_pv[summary_pv['crop_type'] == crop]
-        npv_crop_filtered = summary_npv[summary_npv['crop_type'] == crop]
-        
-        # Plot PV spectra (first column)
-        sns.lineplot(
-            ax=axs[i, 0],
-            data=pv_crop_filtered,
-            x='wavelength',
-            y='reflectance',
-            style='percentile',  # Different line styles for quantiles
-            markers=True,
-            dashes=True,
-            palette='Set2'
-        )
-        
-        axs[i, 0].set_title(f'PV endmembers for {crop}')
-        axs[i, 0].set_ylim(0, 6000)
-        
-        # Plot NPV spectra (second column)
-        sns.lineplot(
-            ax=axs[i, 1],
-            data=npv_crop_filtered,
-            x='wavelength',
-            y='reflectance',
-            style='percentile',  # Different line styles for quantiles
-            markers=True,
-            dashes=True,
-            palette='Set2'
-        )
-        axs[i, 1].set_title(f'NPV endmembers for {crop}')
-        axs[i, 1].set_ylim(0, 6000)
-
-    # Adjust layout to prevent overlap
-    plt.tight_layout()
-    plt.savefig(f'plots/pv_npv_summary_per_cropname_{yr}.png')
-"""
