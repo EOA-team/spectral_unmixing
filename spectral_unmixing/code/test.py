@@ -24,7 +24,6 @@ import warnings
 warnings.filterwarnings("ignore")
 import matplotlib.pyplot as plt
 
-
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -73,7 +72,6 @@ def evaluate_model(y_true, y_pred):
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     r2 = (stats.pearsonr(y_true, y_pred).statistic)**2
     mae = mean_absolute_error(y_true, y_pred)
-    print(rmse, r2, mae)
     return rmse, r2, mae
 
 
@@ -98,11 +96,9 @@ def prepare_data(data_folder, iteration, soil_group, test_size, random_state):
 
 
 def train_model_specific(model_type, model_params, soil_group, class_type, data_folder, test_size, random_state):
-    set_seed(random_state)  # <- ensure reproducibility
 
     class_name = ['NPV', 'PV', 'SOIL'][class_type-1]
     predictions = []
-    labels = []
     scores = []
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,107 +141,82 @@ def train_model_specific(model_type, model_params, soil_group, class_type, data_
             y_test = y_test.cpu().numpy().flatten()
         
         predictions.append(y_pred)
-        labels.append(y_test)
-        rmse, r2, mae = evaluate_model(y_test, y_pred) 
+        rmse, r2, mae = evaluate_model(y_test, y_pred)
         scores.append({'iteration': iteration, 'RMSE': rmse, 'MAE': mae, 'R2': r2})
 
     
-    return predictions, scores, labels
+    return predictions, scores, y_test
 
 
 # Input paths
-data_folder = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_mixing/synthetic_samples_composition_10k')
 results_folder = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_unmixing/results')
+data_folder = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_mixing/synthetic_samples_composition_10k')
 
 # Other setup params
 test_size=0.2
 random_state=42
+set_seed(random_state)
 
 # Input model hyperparams
-hyperparams_file = 'tuned_hyperparams_10k.xlsx'
-hyperparams_xl = pd.ExcelFile(hyperparams_file)
+models = ['NN']  #'SVR', 'RF', 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-for model_type in hyperparams_xl.sheet_names:
-    df = hyperparams_xl.parse(model_type)
-    print(f"Processing params for model: {model_type}")
-    
-    fig, axs = plt.subplots(len(df['Soil group'].unique()), 3, figsize=(5*len(df['Class'].unique()), 5*len(df['Soil group'].unique())))
-    
-    # Loop over soil groups
-    for soil in df['Soil group'].unique():
-        for class_type in df['Class'].unique():
-            
-            df_model = df[(df['Soil group']==soil) & (df['Class']==class_type)]
-            model_params = {
-                k: df_model[k].values[0] if not pd.isna(df_model[k].values[0]) else None
-                for k in df_model.drop(['Soil group', 'Class', 'RMSE'], axis=1).columns
-            }
-            
-            print(f'Training for soil group {soil}, target class {class_type}')
-            # TRAIN 
-            predictions, scores, labels = train_model_specific(model_type=model_type, 
-                                            model_params=model_params,
-                                            soil_group=soil,
-                                            class_type=class_type,
-                                            data_folder=data_folder,
-                                            test_size=test_size,
-                                            random_state=random_state)
-            
-            # Mean predictions and labels
-            mean_preds = np.mean(predictions, axis=0)  # mean of all iterations
-            mean_labels = np.mean(labels, axis=0)  # mean of all iterations
-            # Mean coeff of variation
-            cv = np.std(predictions, axis=0) / np.abs(mean_preds)
-            mean_cv = np.nanmean(cv)  # ignore NaNs if any
-            #print(mean_cv)
+# Prepare to save results
+score_columns = ['class_type', 'soil_group', 'iteration', 'test_soil', 'rmse', 'r2', 'mae']
+prediction_columns = ['class_type', 'soil_group', 'iteration', 'test_soil', 'y_test', 'y_pred']
 
-            # AVG SCORES
-            rows = []
-            for i in range(len(scores)):  
-                row = {
-                    'iteration': scores[i]['iteration'],
-                    'RMSE': scores[i]['RMSE'],
-                    'MAE': scores[i]['MAE'],
-                    'R2': scores[i]['R2'],
-                    'CV_allmodels': mean_cv
-                }
-                rows.append(row)
-            scores_df = pd.DataFrame(rows)
-            print(scores_df.mean()[['RMSE', 'MAE', 'R2', 'CV_allmodels']])
 
-            scores_df.to_csv(f'../results/{model_type}_CLASS{class_type}_SOIL{soil}.csv', index=False)
+for model_type in models:
+    score_list = []
+    prediction_list = []
 
-            # Plot
-            target_name = ['NPV', 'PV', 'SOIL'][class_type-1]
-            color = ['darkgoldenrod', 'green', 'saddlebrown'][class_type-1]
-            axs[soil, class_type-1].scatter(mean_labels, mean_preds, c=color, s=15, alpha=0.5)
-            axs[soil, class_type-1].set_title(f'Soil group {soil}, {target_name}')
-            axs[soil, class_type-1].set_xlabel('Reference FC')
-            axs[soil, class_type-1].set_ylabel('Predicted FC')
-            axs[soil, class_type-1].set_xlim(-0.2,1.2)
-            axs[soil, class_type-1].set_ylim(-0.2,1.2)
-            axs[soil, class_type-1].plot([-0.2, 1.2], [-0.2, 1.2], color='gray', linestyle='--', label='1:1 Line')
-            # Add regression line
-            slope, intercept = np.polyfit(mean_labels, mean_preds, 1)
-            x_vals = np.array([-0.2, 1.2])
-            regression_line = slope * x_vals + intercept
-            axs[soil, class_type-1].plot(x_vals, regression_line, 'k-')
-            # Add scores on plot
-            mean_rmse = scores_df['RMSE'].mean()
-            mean_r2 = scores_df['R2'].mean()
-            mean_mae = scores_df['MAE'].mean()
-            axs[soil, class_type-1].text(
-                0.05, 0.95, f'RMSE: {mean_rmse:.3f}\nMAE: {mean_mae:.3f}\nR²: {mean_r2:.3f}\nCV: {mean_cv:.3f}',
-                transform=axs[soil, class_type-1].transAxes,
-                fontsize=10,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
-            )
+    for class_nbr, class_type in enumerate(['NPV', 'PV', 'SOIL']):  
+        for soil_group in range(0,6): 
+            print(f'Testing {model_type},  soil group {soil_group}, target class {class_type}')
 
+            for iteration in range(1,6):
+                # Load model
+                model_path = f"../models/{model_type}_CLASS{class_nbr+1}_SOIL{soil_group}_ITER{iteration}.pkl"
+                model = joblib.load(model_path)
+                print(model_path)
+
+                # Test on all soil groups for that class (cross soil group testing)
+                # TO DO: loop over soil groups
+                for soil_test in range(0,6):
+                    _, [X_npv_test, X_pv_test, X_soil_test],\
+                    _, [y_npv_test, y_pv_test, y_soil_test] =\
+                    prepare_data(data_folder, iteration, soil_test, test_size, random_state)
+
+                    print('Testing on soil group', soil_test)
+                    X_test = [X_npv_test, X_pv_test, X_soil_test][class_nbr]
+                    y_test = [y_npv_test, y_pv_test, y_soil_test][class_nbr]
+
+                    if device == torch.device('cuda') and model_type == 'NN':
+                        X_test, y_test = (
+                            torch.FloatTensor(X_test).to(device),
+                            torch.FloatTensor(y_test).view(-1, 1).to(device)
+                        ) 
+                    y_pred = model.predict(X_test)
+
+                    if device == torch.device('cuda') and model_type == 'NN':
+                        y_test = y_test.cpu().numpy().flatten()
                     
-    fig.suptitle('Pred vs Test Labels', y=1.1) 
-    plt.tight_layout()
-    plt.savefig(f'../results/test_preds_{model_type}.png')
+                    # Compute metrics
+                    rmse, r2, mae = evaluate_model(y_test, y_pred)
+                    # Save scores
+                    score_list.append([class_type, soil_group, iteration, soil_test, rmse, r2, mae])
+
+                    # Save predictions
+                    prediction_list.append([class_type, soil_group, iteration, soil_test, y_test, y_pred])
+
+
     
+    # Save scores and predictions for that model
+    scores_df = pd.DataFrame(score_list, columns=score_columns)
+    scores_df.to_pickle(f"../results/{model_type}_full_test_scores.pkl") #, index=False)
+
+    predictions_df = pd.DataFrame(prediction_list, columns=prediction_columns)
+    predictions_df.to_pickle(f"../results/{model_type}_full_test_predictions.pkl") #, index=False)
+
 
 
