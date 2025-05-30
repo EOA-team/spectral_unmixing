@@ -85,70 +85,76 @@ def generate_valdata_csv(uav_data_path, s2_data_path, s2_bands, grid_shp, val_da
   fc_results = []
 
   for location in os.listdir(uav_data_path):
-    print(f'-------------------------\n--Location: {location}')
-    for site in os.listdir(os.path.join(uav_data_path, location)):
-      print(f'---Site: {site}')
-      for mission in os.listdir(os.path.join(uav_data_path, location, site)):
-          if os.path.isdir(os.path.join(uav_data_path, location, site, mission)) and mission.endswith('MappingLayer'):
-            print(f'----Mission: {mission}')
-            year = mission[:4]
-            date = mission[:8]
+      print(f'-------------------------\n--Location: {location}')
+      for site in os.listdir(os.path.join(uav_data_path, location)):
+          print(f'---Site: {site}')
+          for mission in os.listdir(os.path.join(uav_data_path, location, site)):
+              if os.path.isdir(os.path.join(uav_data_path, location, site, mission)) and mission.endswith('MappingLayer'):
+                print(f'----Mission: {mission}')
+                year = mission[:4]
+                date = mission[:8]
 
-            for layer in os.listdir(os.path.join(uav_data_path, location, site, mission)):
-                if layer.endswith('prediction_epsg32632.tif'):
-                    print(layer)
+                for layer in os.listdir(os.path.join(uav_data_path, location, site, mission)):
+                    if layer.endswith('prediction_epsg32632.tif'):
+                        print(layer)
 
-                    # Tbd: are coords center or top left?
-                    mask = rioxarray.open_rasterio(os.path.join(uav_data_path, location, site, mission, layer))
-                    mask = mask.sel(band=1)
-                    dx = mask.x.values[1]-mask.x.values[0]
-                    dy = mask.y.values[0]-mask.y.values[1]
+                        # Tbd: are coords center or top left?
+                        mask = rioxarray.open_rasterio(os.path.join(uav_data_path, location, site, mission, layer))
+                        mask = mask.sel(band=1)
+                        dx = mask.x.values[1]-mask.x.values[0]
+                        dy = mask.y.values[0]-mask.y.values[1]
 
-                    # Trim the raster (there are 0s filling around the data)
-                    mask = trim_raster(mask)
-                    xmin, xmax = round_down_to_nearest_10(mask.x.values.min()), round_up_to_nearest_10(mask.x.values.max())
-                    ymin, ymax = round_down_to_nearest_10(mask.y.values.min()), round_up_to_nearest_10(mask.y.values.max())
-                    
-                    # Intersect with S2 10m-grid to find cube of interest
-                    s2_cubes = grid_shp.cx[xmin:xmax, ymin:ymax]
+                        # Clip with field shp
+                        mask_shp = gpd.read_file(os.path.join(uav_data_path, location, site, mission, layer.replace('.tif', '_outline.shp')), crs=32632)
+                        mask = mask.rio.clip(mask_shp.geometry)
 
-                    
-                    for i, row in s2_cubes.iterrows():
-
-                      f = [f for f in os.listdir(s2_data_path) if f'{int(row.left)}_{int(row.top)}' in f and f.split('_')[3].startswith(year)][0]
-                      ds = xr.open_zarr(os.path.join(s2_data_path, f)).compute()
-
-                      # Get closest dates to UAV flight
-                      closest_dates = find_closest_date(ds, date)
-                      
-                      # Create S2 pixel grid over field, omitting border 
-                      s2_pixels_x, s2_pixels_y = create_s2_pix_grid(xmin+10, xmax-10, ymin+10, ymax-10, row)
-                
-                      for x in s2_pixels_x:
-                        for y in s2_pixels_y:
-                          try:
-                            # Get FC per S2 pix              
-                            pix = box(x, y - 10, x + 10, y)  # (minx, miny, maxx, maxy)
-                            pix_fc = mask.rio.clip(gpd.GeoDataFrame({'geometry': [pix]}, crs=mask.rio.crs).geometry)
-                            fc = pix_fc.sum() / pix_fc.size
-                            #print(x,y, fc.values)
-
-                            # Save coordinates, FC, dates, s2 bands, to table
-                            for t in closest_dates:
-                              fc_results.append({
-                                'x': x,
-                                'y': y,
-                                'fc': fc.values,
-                                'mask_file': os.path.join(uav_data_path, location, site, mission, layer),
-                                'uav_date': date,
-                                's2_date': t,
-                                **{band: s.item() for band, s in ds.sel(time=t, lat=y, lon=x)[s2_bands].data_vars.items()}
-                              })
-                          except:
-                            # not all pixels overlap the data
-                            continue
-
+                        # Trim the raster (there are 0s filling around the data)
+                        #mask = trim_raster(mask)
+                        xmin, xmax = round_down_to_nearest_10(mask.x.values.min()), round_up_to_nearest_10(mask.x.values.max())
+                        ymin, ymax = round_down_to_nearest_10(mask.y.values.min()), round_up_to_nearest_10(mask.y.values.max())
                         
+                        # Intersect with S2 10m-grid to find cube of interest
+                        s2_cubes = grid_shp.cx[xmin:xmax, ymin:ymax]
+
+          
+                        for i, row in s2_cubes.iterrows():
+
+                          f = [f for f in os.listdir(s2_data_path) if f'{int(row.left)}_{int(row.top)}' in f and f.split('_')[3].startswith(year)][0]
+                          ds = xr.open_zarr(os.path.join(s2_data_path, f)).compute()
+                          ds = ds.drop_duplicates('time', keep='first')
+
+                          # Get closest dates to UAV flight
+                          closest_dates = find_closest_date(ds, date)
+                          
+                          # Create S2 pixel grid over field, omitting border 
+                          s2_pixels_x, s2_pixels_y = create_s2_pix_grid(xmin+10, xmax-10, ymin+10, ymax-10, row)
+                          s2area = gpd.GeoDataFrame({'geometry': [box(xmin, ymin, xmax, ymax)]}, crs=mask.rio.crs)
+
+                          for x in s2_pixels_x:
+                            for y in s2_pixels_y:
+                              try:
+                                # Get FC per S2 pix              
+                                pix = box(x, y - 10, x + 10, y)  # (minx, miny, maxx, maxy)
+                                pix_fc = mask.rio.clip(gpd.GeoDataFrame({'geometry': [pix]}, crs=mask.rio.crs).geometry)
+                                fc = pix_fc.sum() / pix_fc.size
+
+                                # Save coordinates, FC, dates, s2 bands, to table
+                                for t in closest_dates:
+                                  fc_results.append({
+                                    'x': x,
+                                    'y': y,
+                                    'fc': fc.values,
+                                    'mask_file': os.path.join(uav_data_path, location, site, mission, layer),
+                                    'uav_date': date,
+                                    's2_date': t,
+                                    **{band: s.item() for band, s in ds.sel(time=t, lat=y, lon=x)[s2_bands].data_vars.items()}
+                                  })
+                              except Exception as e:
+                                print(e)
+                                # not all pixels overlap the data
+                                continue
+                    
+                              
   df = pd.DataFrame(fc_results)
   df.to_csv(val_data_path, index=False)
 
@@ -223,14 +229,14 @@ def plot_valdata(val_data_path, save_dir):
     return
 
 
-def plot_valdata_preds(pred_path, class_type, save_dir):
+def plot_valdata_preds(pred_path, class_type, save_dir, model_nbr=0):
 
     df = pd.read_csv(pred_path)
     missions = df.mask_file.unique()
 
-    class_col = f'{class_type.lower()}_pred'
+    class_col = f'{class_type.lower()}_pred_{model_nbr}'
 
-    df[class_col] = df.apply(lambda x: x[class_col]/(x.pv_pred + x.npv_pred + x.soil_pred), axis=1)
+    df[class_col] = df.apply(lambda x: x[class_col]/(x[f'pv_pred_{model_nbr}'] + x[f'npv_pred_{model_nbr}'] + x[f'soil_pred_{model_nbr}']), axis=1)
 
     for mission in missions:
 
@@ -290,7 +296,7 @@ def plot_valdata_preds(pred_path, class_type, save_dir):
 
           # Preds
           im_pred = ax3.imshow(pred_grid, origin='lower', extent=extent, cmap='Greens', vmin=0, vmax=1)
-          ax3.set_title('FC from NN')
+          ax3.set_title('FC from NN global')
           ax3.set_xlabel('x')
           ax3.set_ylabel('y')
           ax3.set_aspect('equal')
@@ -304,14 +310,108 @@ def plot_valdata_preds(pred_path, class_type, save_dir):
     return
 
 
-def plot_valdata_scatters(pred_path, class_type, save_dir):
+def plot_valdata_preds_modelcompare(pred_path, class_type, save_dir):
 
     df = pd.read_csv(pred_path)
     missions = df.mask_file.unique()
 
-    class_col = f'{class_type.lower()}_pred'
+    # Identify all relevant prediction groups
+    pred_cols = [col for col in df.columns if col.startswith(f'{class_type.lower()}_pred')]
+    pred_sets = [col.split('_')[-1] for col in pred_cols]  # extract suffixes (e.g. '0', '1')
+    
+    # Normalize each prediction set individually
+    for suffix in pred_sets:
+        pv_col = f'pv_pred_{suffix}'
+        npv_col = f'npv_pred_{suffix}'
+        soil_col = f'soil_pred_{suffix}'
+        target_col = f'{class_type.lower()}_pred_{suffix}'
 
-    df[class_col] = df.apply(lambda x: x[class_col]/(x.pv_pred + x.npv_pred + x.soil_pred), axis=1)
+        df[target_col] = df.apply(
+            lambda x: x[target_col] / (x[pv_col] + x[npv_col] + x[soil_col]) if (x[pv_col] + x[npv_col] + x[soil_col]) != 0 else 0,
+            axis=1
+        )
+
+    for mission in missions:
+
+        df_mission = df[df.mask_file==mission]
+
+        # There could be several S2 dates per UAV flight
+        duplicates = df_mission[df_mission.duplicated(subset=['x', 'y', 'uav_date'], keep=False)]
+        s2_dates = duplicates['s2_date'].unique()
+
+        for d in s2_dates:
+          df_val = df_mission[df_mission.s2_date==d]
+
+          # Pivot the data to create 2D grids (assumes gridded data!)
+          df_fc = df_val.pivot(index='y', columns='x', values='fc')
+          df_r = df_val.pivot(index='y', columns='x', values='s2_B04')
+          df_g = df_val.pivot(index='y', columns='x', values='s2_B03')
+          df_b = df_val.pivot(index='y', columns='x', values='s2_B02')
+
+          x_coords = df_fc.columns.values
+          y_coords = df_fc.index.values
+          extent = [x_coords.min(), x_coords.max(), y_coords.min(), y_coords.max()]
+
+          # Create 2D arrays
+          fc_grid = df_fc.values
+          r_grid = df_r.values / 10000
+          g_grid = df_g.values / 10000
+          b_grid = df_b.values / 10000
+
+          # Stack into RGB image
+          rgb_image = np.stack([r_grid, g_grid, b_grid], axis=-1)
+
+          # Define figure and GridSpec layout
+          n_preds = len(pred_sets)
+          fig = plt.figure(figsize=(5 * (2 + n_preds), 6))
+          gs = gridspec.GridSpec(1, 2 + n_preds + 1, width_ratios=[1] * (2 + n_preds) + [0.05], wspace=0.2)
+
+          # RGB image
+          ax1 = fig.add_subplot(gs[0])
+          ax1.imshow(rgb_image * 3, origin='lower', extent=extent)
+          ax1.set_title('RGB S2')
+          ax1.set_xlabel('x')
+          ax1.set_ylabel('y')
+          ax1.set_aspect('equal')
+
+          # UAV FC image
+          ax2 = fig.add_subplot(gs[1])
+          im_fc = ax2.imshow(fc_grid, origin='lower', extent=extent, cmap='Greens', vmin=0, vmax=1)
+          ax2.set_title('FC from UAV')
+          ax2.set_xlabel('x')
+          ax2.set_ylabel('y')
+          ax2.set_aspect('equal')
+
+          # NN Predictions
+          for i, suffix in enumerate(pred_sets):
+              pred_col = f'{class_type.lower()}_pred_{suffix}'
+              pred_grid = df_val.pivot(index='y', columns='x', values=pred_col).values
+
+              ax = fig.add_subplot(gs[2 + i])
+              ax.imshow(pred_grid, origin='lower', extent=extent, cmap='Greens', vmin=0, vmax=1)
+              ax.set_title(f'FC NN soil group {pred_col}')
+              ax.set_xlabel('x')
+              ax.set_ylabel('y')
+              ax.set_aspect('equal')
+
+          # Colorbar
+          cax = fig.add_subplot(gs[-1])
+          fig.colorbar(im_fc, cax=cax, label='FC')
+
+          plt.suptitle(mission.split('/')[-1])
+          plt.savefig(os.path.join(save_dir, f'compare_preds_{mission.split("/")[-1]}_{d.strip("-")}.png'))
+
+    return
+
+
+def plot_valdata_scatters(pred_path, class_type, save_dir, model_nbr=0):
+
+    df = pd.read_csv(pred_path)
+    missions = df.mask_file.unique()
+
+    class_col = f'{class_type.lower()}_pred_{model_nbr}'
+
+    df[class_col] = df.apply(lambda x: x[class_col]/(x[f'pv_pred_{model_nbr}'] + x[f'npv_pred_{model_nbr}'] + x[f'soil_pred_{model_nbr}']), axis=1)
 
     for mission in missions:
 
@@ -395,9 +495,10 @@ def predict_FC(val_data_path, s2_bands, pred_path, soil_group, model_type):
     mean_soil = np.mean(predictions_soil, axis=0)
 
     # Save predictions
-    df['pv_pred'] = mean_pv
-    df['npv_pred'] = mean_npv
-    df['soil_pred'] = mean_soil
+    df[f'pv_pred_{soil_group}'] = mean_pv
+    df[f'npv_pred_{soil_group}'] = mean_npv
+    df[f'soil_pred_{soil_group}'] = mean_soil
+
     df.to_csv(pred_path, index=False)
 
     return
@@ -416,50 +517,65 @@ if __name__ == '__main__':
   s2_bands = ['s2_B02','s2_B03','s2_B04','s2_B05','s2_B06','s2_B07','s2_B08','s2_B8A','s2_B11','s2_B12']
   s2_grid = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/012_EO_dataInfrastructure/Project layers/gridface_s2tiles_CH.shp')
   grid_shp = gpd.read_file(s2_grid, crs=32632)
-  val_data_path = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_unmixing/data/UAV_FC.csv')
+  val_data_path = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_unmixing/data/UAV_FC_clip.csv')
 
-  #generate_valdata_csv(uav_data_path, s2_data_path, s2_bands, grid_shp, val_data_path)
+  generate_valdata_csv(uav_data_path, s2_data_path, s2_bands, grid_shp, val_data_path)
 
-
+  
   #####################
   # PLOT VAL FC DATA AND RGB 
 
   # Will randomly select a site
   save_dir = '../results/UAV_validation/'
   os.makedirs(save_dir, exist_ok=True)
-  #plot_valdata(val_data_path, save_dir)
+  plot_valdata(val_data_path, save_dir)
 
 
   #####################
   # PREDICT FC PV
-
-  pred_path = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_unmixing/code/UAV_FC_preds.csv')
-
-  soil_group = 0
+ 
+  res_dir = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_unmixing/results/UAV_validation/')
+  os.makedirs(res_dir, exist_ok=True)
+  result_path = os.path.join(res_dir, 'UAV_FC_preds.csv')
+ 
   model_type = 'NN'
 
-  #predict_FC(val_data_path, s2_bands, pred_path, soil_group, model_type)
-
+  for soil_group in range(0,6):
+    if not os.path.exists(result_path):
+      predict_FC(val_data_path, s2_bands, result_path, soil_group, model_type)
+    else:
+      # Append to existing predictions
+      predict_FC(result_path, s2_bands, result_path, soil_group, model_type)
 
   #####################
   # PLOT PREDS vs GROUND TRUTH
 
-  save_dir = '../results/UAV_validation/'
-  os.makedirs(save_dir, exist_ok=True)
-
-  #plot_valdata_preds(pred_path, 'PV', save_dir)
-
-  #plot_valdata_scatters(pred_path, 'PV', save_dir)
-
-  # Report over scores
-  df = pd.read_csv(pred_path)
-  df['FC'] = df.apply(lambda x: x['pv_pred']/(x.pv_pred + x.npv_pred + x.soil_pred), axis=1)
-  rmse = np.sqrt(mean_squared_error(df.FC, df.fc))
-  mae = mean_absolute_error(df.FC, df.fc)
-  r, p_value = pearsonr(df.FC, df.fc)
-  r2 = r**2
-  print(f'Overall scores on UAV PV FC data: RMSE {rmse}, MAE {mae}, R2 {r2}')
+  # For the global model
+  plot_valdata_preds(result_path, 'PV', res_dir) # plot S2 RGB, UAV FV, soil group 0 FC
+  plot_valdata_scatters(result_path, 'PV', res_dir) 
+ 
+  plot_valdata_preds_modelcompare(result_path, 'PV', res_dir) # plot S2 RGB, UAV FV, each soil group FC
 
 
 
+  # Report overall scores
+  df = pd.read_csv(result_path)
+
+  # Identify all relevant prediction groups
+  pred_cols = [col for col in df.columns if col.startswith('pv_pred')]
+  pred_sets = [col.split('_')[-1] for col in pred_cols]  # extract suffixes (e.g. '0', '1')
   
+  # Normalize each prediction set individually
+  for suffix in pred_sets:
+      print('Scores model soil group', suffix)
+
+      pv_col = f'pv_pred_{suffix}'
+      npv_col = f'npv_pred_{suffix}'
+      soil_col = f'soil_pred_{suffix}'
+
+      df['FC'] = df.apply(lambda x: x[pv_col]/(x[pv_col] + x[npv_col] + x[soil_col]), axis=1)
+      rmse = np.sqrt(mean_squared_error(df.FC, df.fc))
+      mae = mean_absolute_error(df.FC, df.fc)
+      r, p_value = pearsonr(df.FC, df.fc)
+      r2 = r**2
+      print(f'RMSE {rmse}, MAE {mae}, R2 {r2}')
