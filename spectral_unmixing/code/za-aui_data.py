@@ -340,9 +340,13 @@ def predict_fc(parcel_shp, s2_data_dir, yr, soil_group, model_type, chunk_size=1
     preds['PV_norm'] = preds['PV'].clip(min=0)
     preds['NPV_norm'] = preds['NPV'].clip(min=0)
     preds['Soil_norm'] = preds['Soil'].clip(min=0)
-    preds['PV_norm'] = preds['PV_norm'] / (preds['PV_norm'] + preds['NPV_norm'] + preds['Soil_norm'])
-    preds['NPV_norm'] = preds['NPV_norm'] / (preds['PV_norm'] + preds['NPV_norm'] + preds['Soil_norm'])
-    preds['Soil_norm'] = preds['Soil_norm'] / (preds['PV_norm'] + preds['NPV_norm'] + preds['Soil_norm'])
+    print(preds.PV_norm.isel(time=0, lat=0, lon=0).values, preds.NPV_norm.isel(time=0, lat=0, lon=0).values, preds.Soil_norm.isel(time=0, lat=0, lon=0).values)
+    denom = preds['PV_norm'] + preds['NPV_norm'] + preds['Soil_norm']
+    preds['PV_norm'] = preds['PV_norm'] / denom
+    preds['NPV_norm'] = preds['NPV_norm'] / denom
+    preds['Soil_norm'] = preds['Soil_norm'] / denom
+    print(preds.PV_norm.isel(time=0, lat=0, lon=0).values, preds.NPV_norm.isel(time=0, lat=0, lon=0).values, preds.Soil_norm.isel(time=0, lat=0, lon=0).values)
+
 
     # Order ds by time
     preds = preds.sortby('time')
@@ -771,7 +775,7 @@ buffer_plot = 200
 
 # Loop through years
 years = [int(col.split('_')[1]) for col in hauptkultur_df.columns if 'hauptkultur' in col]
-years = [y for y in years if y>2016] # Available S2 data
+years = [y for y in years if y>2015] # Available S2 data
 
 for yr in years:
     os.makedirs(os.path.join(results_dir, str(yr)), exist_ok=True)
@@ -863,7 +867,7 @@ for yr in years:
                     mean_NPV_clean = mean_NPV.sel(time=dates_clean) if len(dates_clean)>0 else []
                     mean_Soil_clean = mean_Soil.sel(time=dates_clean) if len(dates_clean)>0 else []
 
-
+            
                     #########################
                     # PLOT TIMESERIES
                     if soil_group == 0:
