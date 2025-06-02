@@ -7,7 +7,236 @@ import numpy as np
 import matplotlib.patches as mpatches
 import ast
 from sklearn.metrics import mean_squared_error
+from scipy.stats import sem, t, ttest_rel, ttest_ind, wilcoxon
 
+
+def compute_confidence_interval(data, confidence=0.95):
+    n = len(data)
+    if n < 2:
+        return 0  # Cannot compute CI with 1 value
+    m = np.mean(data)
+    se = sem(data)  # standard error
+    h = se * t.ppf((1 + confidence) / 2., n-1)  # margin of error
+    return h
+
+
+def convert_pval_to_start(p_val):
+    if p_val is not None:
+        if p_val < 0.001:
+            star = '***'
+        elif p_val < 0.01:
+            star = '**'
+        elif p_val < 0.05:
+            star = '*'
+        else:
+            star = ''
+    
+    return star
+
+
+
+
+# ======= PLOT GLOBAL vs SOIL SPECIFIC SCORES ===========
+# WITH STATISTICAL SINGIFICANCE OF DIFFERENCE BETWEEN GLOVAL/SPECIFIC MODELS
+
+model_type = "NN"
+metric = "RMSE"
+metric = metric.lower()
+
+df_scores = pd.read_pickle(f"../results/{model_type}_full_test_scores.pkl")
+df_preds = pd.read_pickle(f"../results/{model_type}_full_test_predictions.pkl")
+
+# Prepare data for plotting: keep only rows where model was either:
+# - global (soil_group == 0), OR
+# - matched the test soil (soil_group == _test_soil)
+filtered_df = df_scores[
+    (df_scores['soil_group'] == 0) | (df_scores['soil_group'] == df_scores['test_soil'])
+].copy()
+
+# Add model type
+filtered_df['Model'] = filtered_df['soil_group'].apply(lambda x: 'Global' if x == 0 else 'Soil-specific')
+filtered_df['test_soil'] = filtered_df['test_soil'].astype(str)  # For consistent plotting
+filtered_df = filtered_df.sort_values(by='test_soil')
+
+# First, compute statistical significance between golbal/soil specific model with t-test (p<0.05 then reject Ho of no difference)
+significance_results = {}
+
+for class_type in filtered_df['class_type'].unique():
+    for test_soil in filtered_df['test_soil'].unique():
+        global_vals = filtered_df[
+            (filtered_df['soil_group'] == 0) &
+            (filtered_df['test_soil'] == test_soil) &
+            (filtered_df['class_type'] == class_type)
+        ][metric].values
+
+        if test_soil == "0":
+            # Soil-specific models tested on soil 0 but not global
+            soil_spec_vals = df_scores[
+                (df_scores['soil_group'] != 0) &
+                (df_scores['test_soil'] == 0) &
+                (df_scores['class_type'] == class_type)  # Make sure to filter by class_type too if needed
+            ][[metric, 'soil_group']].groupby('soil_group').mean()[metric].values
+        else:
+            soil_spec_vals = filtered_df[
+                (filtered_df['soil_group'] == int(test_soil)) &
+                (filtered_df['test_soil'] == test_soil) &
+                (filtered_df['class_type'] == class_type)
+            ][metric].values
+            
+            
+        if len(global_vals) > 1 and len(soil_spec_vals) > 1:
+            t_stat, p_val = ttest_ind(global_vals, soil_spec_vals, equal_var=False)
+            significance_results[(class_type, test_soil)] = p_val
+        else:
+            significance_results[(class_type, test_soil)] = None
+        
+         
+
+# Color map by test soil
+color_map = {
+    "0": "saddlebrown",
+    "1": "teal",
+    "2": "orange",
+    "3": "rebeccapurple",
+    "4": "palevioletred",
+    "5": "olivedrab"
+}
+
+# Hatch pattern map
+hatch_map = {
+    'Global': '//',
+    'Soil-specific': ''
+}
+
+# Plot
+sns.set(style='white')
+palette = {'Global': 'lightgray', 'Soil-specific': 'saddlebrown'}
+hatch_map = {'Global': '//', 'Soil-specific': '...'}
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 6), sharey=True)
+
+for ax, class_type in zip(axes, ['NPV', 'PV', 'SOIL']):
+    subset = filtered_df[filtered_df['class_type'] == class_type]
+    
+    # Plot bars manually
+    bar_width = 0.4
+    test_soils = sorted(subset['test_soil'].unique())
+    x_locs = range(len(test_soils))
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    for i, test_soil in enumerate(test_soils):
+        star_positions = []
+        for j, model in enumerate(['Global', 'Soil-specific']):
+            vals = subset[
+                (subset['test_soil'] == test_soil) &
+                (subset['Model'] == model)
+            ][metric].values
+            if len(vals) > 0:
+                mean_val = np.mean(vals)
+                ci = compute_confidence_interval(vals)
+                color = color_map[test_soil]
+                hatch = hatch_map[model]
+                ax.bar(
+                    i + (j - 0.5) * bar_width,
+                    mean_val,
+                    width=bar_width,
+                    color=color,
+                    edgecolor='black',
+                    hatch=hatch,
+                    label=model if i == 0 else None,  # only add label once for legend
+                    yerr=ci,
+                    capsize=4,
+                    error_kw={
+                        'ecolor': 'dimgray',
+                        'elinewidth': 1.5,
+                        'capthick': 1.5,
+                        'linestyle': 'dashed',
+                    }
+                )
+                # Add label above CI bar
+                upper_y = mean_val + ci if isinstance(ci, (int, float)) else mean_val + ci[1]
+                text_y = upper_y + upper_y*0.015
+                star_positions.append(text_y)
+                ax.text(i + (j - 0.5) * bar_width, text_y, f'{mean_val:.2f}', 
+                        ha='center', va='bottom', fontsize=8)
+
+        # Add mean soil-specific bar for test_soil == "0"
+        if test_soil == "0":
+            # Get soil specific models on global soils
+            soil_spec_vals = df_scores[
+                (df_scores['soil_group'] != 0) &  # Only soil-specific models
+                (df_scores['test_soil'] == 0) &   # Tested on the global dataset
+                (df_scores['class_type'] == class_type)
+            ][metric].values
+
+            if len(soil_spec_vals) > 0:
+                mean_val = np.mean(soil_spec_vals)
+                ci = compute_confidence_interval(soil_spec_vals)
+                color = color_map[test_soil]
+                ax.bar(
+                    i + 0.5* bar_width,  # right-most bar
+                    mean_val,
+                    width=bar_width,
+                    color=color,
+                    edgecolor='black',
+                    yerr=ci,  # Add error bar
+                    hatch=hatch_map['Soil-specific'],
+                    capsize=4,
+                    error_kw={
+                        'ecolor': 'dimgray',        # error bar color
+                        'elinewidth': 1.5,        # thickness of error bar lines
+                        'capthick': 1.5,          # thickness of the caps
+                        'linestyle': 'dashed',
+                    },
+                )
+                upper_y = mean_val + ci if isinstance(ci, (int, float)) else mean_val + ci[1]
+                text_y = upper_y + upper_y*0.015
+                star_positions.append(text_y)
+                ax.text(i + 0.5*bar_width, text_y, f'{mean_val:.2f}', 
+                        ha='center', va='bottom', fontsize=8)
+
+
+        # Add star to indicate significance (* if p<0.05, ** if p<0.01, *** if p<0.001)
+        star = convert_pval_to_start(significance_results.get((class_type, test_soil)))
+        star_y = max(star_positions)*1.04
+        ax.text(i, star_y, star, ha='center', va='bottom', fontsize=14, color='black')
+
+
+    ax.set_title(class_type, pad=15)
+    ax.set_xlabel("Soil Group")
+    ax.set_xticks(x_locs)
+    #ax.set_xticklabels(['all' if ts == "0" else str(ts) for ts in test_soils])
+    # Add test set size to the x labels       
+    xtick_labels = []
+    for ts in test_soils:
+        ts_int = int(ts)
+        # number of samples in test set
+        n_test = df_preds[
+            (df_preds['class_type'] == class_type) &
+            (df_preds['test_soil'] == ts_int) &
+            (df_preds['soil_group'] == ts_int)
+        ].groupby('iteration')['y_test'].apply(lambda x: np.mean([len(arr) for arr in x])).mean()
+        
+        label = f"{'all' if ts == '0' else ts}\nn={int(n_test)}"
+        xtick_labels.append(label)
+    ax.set_xticklabels(xtick_labels)
+
+    if class_type == 'NPV':
+        ax.set_ylabel(f"{metric.upper()} [-]")
+
+# Create custom legend for hatch
+handles = [
+    mpatches.Patch(facecolor='gray', edgecolor='black', hatch='//', label='Global'),
+    mpatches.Patch(facecolor='gray', edgecolor='black', hatch='..', label='Soil-specific')
+]
+axes[-1].legend(handles=handles, title='Model', loc='upper left', bbox_to_anchor=(1.05, 1))
+
+plt.tight_layout()
+plt.savefig(f"{model_type}_{metric}_barplot_ci.png")
+
+
+"""
 # ======= PLOT GLOBAL vs SOIL SPECIFIC SCORES ===========
 
 model_type = "NN"
@@ -148,7 +377,7 @@ plt.tight_layout()
 plt.savefig(f"{model_type}_{metric}_barplot.png")
 """
 
-
+"""
 # ======= SCATTER PLOT GLOBAL VS SOIL SPECIFIC ON SOIL TEST SETS ===========
 
 model_type = "NN"
