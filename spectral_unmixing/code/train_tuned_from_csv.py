@@ -23,6 +23,7 @@ from models import MODELS
 import warnings
 warnings.filterwarnings("ignore")
 import matplotlib.pyplot as plt
+from scipy.stats import t
 
 
 def set_seed(seed=42):
@@ -73,7 +74,6 @@ def evaluate_model(y_true, y_pred):
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
     r2 = (stats.pearsonr(y_true, y_pred).statistic)**2
     mae = mean_absolute_error(y_true, y_pred)
-    print(rmse, r2, mae)
     return rmse, r2, mae
 
 
@@ -138,7 +138,7 @@ def train_model_specific(model_type, model_params, soil_group, class_type, data_
 
         # Save model
         model_path = f"../models/{model_type}_CLASS{class_type}_SOIL{soil_group}_ITER{iteration}.pkl"
-        joblib.dump(model, model_path)
+        #joblib.dump(model, model_path)
 
         # Save prediction and scores
         if device == torch.device('cuda') and model_type == 'NN':
@@ -194,10 +194,25 @@ for model_type in hyperparams_xl.sheet_names:
             # Mean predictions and labels
             mean_preds = np.mean(predictions, axis=0)  # mean of all iterations
             mean_labels = np.mean(labels, axis=0)  # mean of all iterations
+      
             # Mean coeff of variation
             cv = np.std(predictions, axis=0) / np.abs(mean_preds)
             mean_cv = np.nanmean(cv)  # ignore NaNs if any
-            #print(mean_cv)
+            print('Mean CV', mean_cv)
+            # Mean width of confidence intervals
+            n_models = 5
+            confidence = 0.95
+            std_per_sample = np.std(predictions, axis=0)
+            sem_per_sample = std_per_sample / np.sqrt(n_models) # standard error of the mean
+            t_score = t.ppf((1 + confidence) / 2., df=n_models - 1)
+            ci_half_widths = t_score * sem_per_sample # CI half-width
+            ci_widths = 2 * ci_half_widths
+            mean_ci_width = np.mean(ci_widths)
+            print(f'Mean +/- {mean_ci_width/2}')
+            # Mean std
+            mean_std = np.mean(std_per_sample)
+            print('Mean stdev', mean_std)
+
 
             # AVG SCORES
             rows = []
@@ -207,7 +222,9 @@ for model_type in hyperparams_xl.sheet_names:
                     'RMSE': scores[i]['RMSE'],
                     'MAE': scores[i]['MAE'],
                     'R2': scores[i]['R2'],
-                    'CV_allmodels': mean_cv
+                    'CV_allmodels': mean_cv,
+                    'CI_half_width': mean_ci_width / 2,
+                    'Mean Stdev': mean_std,
                 }
                 rows.append(row)
             scores_df = pd.DataFrame(rows)
@@ -235,7 +252,7 @@ for model_type in hyperparams_xl.sheet_names:
             mean_r2 = scores_df['R2'].mean()
             mean_mae = scores_df['MAE'].mean()
             axs[soil, class_type-1].text(
-                0.05, 0.95, f'RMSE: {mean_rmse:.3f}\nMAE: {mean_mae:.3f}\nR²: {mean_r2:.3f}\nCV: {mean_cv:.3f}',
+                0.05, 0.95, f'RMSE: {mean_rmse:.3f}\nMAE: {mean_mae:.3f}\nR²: {mean_r2:.3f}\nCV: {mean_cv:.3f}\nCI half-width: ±{mean_ci_width/2:.3f}\nMean Stdev: {mean_std:.3f}',
                 transform=axs[soil, class_type-1].transAxes,
                 fontsize=10,
                 verticalalignment='top',
