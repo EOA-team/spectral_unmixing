@@ -98,3 +98,40 @@ python spectral_unmixing/code/train_tuned_from_csv.py
 which will save each model as `spectral_unmixing/models/{MODELTYPE}_CLASS{i}_SOIL{j}_ITER{N}.pkl` and the results (RMSE, R2, MAE) in `spectral_unmixing/results/{MODELTYPE}_CLASS{i}_SOIL{j}.csv`
 
 Plots on the test set (leave-out from train set) are save in `spectral_unmixing/results/test_preds_{MODELTYPE}.png`
+
+### Validation on drone data
+The FC models were run on high-resolution drone data, where PV fractions were availbale for the drone data and compared to the predictions after upsacling to the same resolution as Sentinel-2:
+```
+python spectral_unmixing/code/UAV_validation.py
+```
+
+
+### Validation on farm data
+The models are also evaulated on some georeferenced farm data with field calendars (ZA-AUI data).
+FC timeseries (only basic cloud cleaning done) with images were produced for farms over multiple years.
+
+- `spectral_unmixing/code/za-aui_data.py`:  produces the timeseries and plots for the farms. Saves the results year by year, crop by crop in `spectral_unmixing/results/ZA-AUI/<year>/<crop_name>/<farm_id>/...png`. A visual/qualitative evaluation of the performance of the models based on these plots was done in `spectral_unmixing/code/ZA-AUI_evaluation.xlsx` and these results were synthesised in `spectral_unmixing/code/za-aui.ipynb`
+- `spectral_unmixing/code/za-aui_data_management.py`: produces the plots for a farms where theres was a specific management activity. Results saved to `spectral_unmixing/results/ZA-AUI/NPV_check`
+- `spectral_unmixing/code/za-aui_data_fcprecompute.py`: Same as  `spectral_unmixing/code/za-aui_data.py` except that it uses precomputed FC data instead of running predictions on the fly.
+
+
+## 5. Timeseries cleaning
+
+Different timeseries cleaning and gapfilling algorithms were tested, using the ZA-AUI data.
+- `timeseries_cleaning/clean_zaaui.py`: timeseries for the farm data, and its field calendar
+- `timeseries_cleaning/clean_fulltime.py`: timeseries for the farm data, on a single year
+
+The best pipeline seems to be:
+1. Apply strict cloud cleaning `clean_dataset(ds, cloud_thresh=0.05, snow_thresh=0.1, shadow_thresh=0.1, cirrus_thresh=800)`
+2. Use GPR to gapfill and get uncertainty on a single year of data
+
+To generate a single farm plot (no gapfilling, just timeseries cleaning) use `timeseries_cleaning/generate_plot.py`
+
+
+## 6. FC product
+
+Predict FC for every available S2 pixel:
+```
+python FC_mapping/predict_FC_CH.py #runs on multi-CPU and needs GPU
+``` 
+
