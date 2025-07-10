@@ -203,8 +203,10 @@ def predict_nn_in_batches(model, X_tensor, device, batch_size=10000):
 
 
 def load_data(parcel_shp, s2_data_dir, yr, fc_dir, soil_group, chunk_size=10):
-    print('here')
-    s2_files = find_cubes(parcel_shp,s2_data_dir, [yr, yr-1])
+    s2_files = find_cubes(parcel_shp,s2_data_dir, [yr])
+    # Since not all FC data might yet have been produced for every year
+    s2_files = [f for f in s2_files if os.path.exists(os.path.join(fc_dir, f))]
+
 
     # Determine dominant soil group of parcel
     if soil_group is None:
@@ -238,16 +240,17 @@ def load_data(parcel_shp, s2_data_dir, yr, fc_dir, soil_group, chunk_size=10):
         ds = open_cubes_conflicting([os.path.join(s2_data_dir, f) for f in s2_files])
     ds = ds.drop_duplicates(dim='time', keep='first') # TO DO : prioritise the tiles in UTM 32
 
-    print('loaded S2')
-    print([os.path.join(fc_dir, f) for f in s2_files])
     # Open FC data
     try: # No conflicting timestamps
-        preds = xr.open_mfdataset([os.path.join(fc_dir, f) for f in s2_files], combine='by_coords').compute()
+        preds = xr.open_mfdataset([os.path.join(fc_dir, f) for f in s2_files if os.path.exists(os.path.join(fc_dir, f))], combine='by_coords').compute()
     except: # Use product_uri to merge
-        preds = open_cubes_conflicting([os.path.join(fc_dir, f) for f in s2_files])
+        preds = open_cubes_conflicting([os.path.join(fc_dir, f) for f in s2_files if os.path.exists(os.path.join(fc_dir, f))])
     preds = preds.drop_duplicates(dim='time', keep='first') # TO DO : prioritise the tiles in UTM 32
-    print('loaded FC')
 
+    # Clip the data to the parcel 
+    preds = preds.rio.set_spatial_dims(x_dim='lon', y_dim='lat')
+    preds = preds.rio.write_crs(32632).rio.clip(parcel_shp.geometry) 
+    
     return ds, preds, soil_group
 
 
@@ -295,7 +298,7 @@ def plot_timeseries(df_parcel, dates_raw, mean_PV, mean_NPV, mean_Soil, dates_cl
     return
 
 
-def plot_timeseries_images(df_parcel, ds, dates_clean, dates_raw, preds, parcel_shp, buffer_plot, save_path):
+def plot_timeseries_images(df_parcel, ds, dates_clean, dates_raw, preds, parcel_shp, buffer_plot, save_path, suffix):
     
     # Shorten S2 timeseries to field calendar
     start_date = df_parcel['datum'].min()-pd.Timedelta(days=20)
@@ -308,9 +311,10 @@ def plot_timeseries_images(df_parcel, ds, dates_clean, dates_raw, preds, parcel_
     dates_raw = np.array([d for d in ds.time.values if d in dates_raw])
    
     # Get timeseries/RGB for shorten timeseries and cleaned dates
-    mean_PV = preds.PV_norm.mean(dim=['lon', 'lat'])
-    mean_NPV = preds.NPV_norm.mean(dim=['lon', 'lat'])
-    mean_Soil = preds.Soil_norm.mean(dim=['lon', 'lat'])
+    mean_PV = preds[f'PV_norm_{suffix}'].mean(dim=['lon', 'lat'])
+    mean_NPV = preds[f'NPV_norm_{suffix}'].mean(dim=['lon', 'lat'])
+    mean_Soil = preds[f'Soil_norm_{suffix}'].mean(dim=['lon', 'lat'])
+
     
     if len(dates_clean):
         mean_PV_clean = mean_PV.sel(time=dates_clean)
@@ -394,7 +398,7 @@ def plot_timeseries_images(df_parcel, ds, dates_clean, dates_raw, preds, parcel_
     ax_ts.set_title('Predicted soil cover')
     ax_ts.set_xlim(df_parcel['datum'].min()-pd.Timedelta(days=20), df_parcel['datum'].max()+pd.Timedelta(days=20))
 
-    plt.tight_layout() #
+    plt.tight_layout() 
     plt.savefig(save_path)
 
     return
@@ -671,6 +675,7 @@ buffer_plot = 200
 management = 'Mowing weeds'
 file_suffix = 'mowweeds'
 soil_group = 0
+suffix = 'global' if soil_group==0 else 'soil'
 
 # Loop through years
 years = [int(col.split('_')[1]) for col in hauptkultur_df.columns if 'hauptkultur' in col]
@@ -688,7 +693,7 @@ for yr in years:
     # Sample a parcel that has given management
     farm_polys_with_calendar = pd.merge(farms_polys, df, left_on=f'parzellen_id_{yr}', right_on='parzellen_id')
     try:
-        #parcel_with_mgmt = farm_polys_with_calendar[(farm_polys_with_calendar.activity==management) & (farm_polys_with_calendar.name=='Rte Bétonnée')]
+        #parcel_with_mgmt = farm_polys_with_calendar[(farm_polys_with_calendar.activity==management) & (farm_polys_with_calendar.name=='11 Pâturage boisé J-D')]
         parcel_with_mgmt = farm_polys_with_calendar[farm_polys_with_calendar.activity==management].sample(1)
         parcel_id = parcel_with_mgmt.parzellen_id.values[0]
         betr_ID = parcel_with_mgmt.betr_ID.values[0]
@@ -716,16 +721,13 @@ for yr in years:
         # PREDICT FC ON S2 DATA  
         ds, preds, soil_group_parcel = load_data(parcel_with_mgmt, s2_data_dir, yr, fc_dir, soil_group, chunk_size=10)
         #soil_group_parcel is either defined as 0, or the None should be changed to a nbr if found
-
-        print(ds.sizes, preds.sizes)
         
         if ds is not None and soil_group_parcel is not None: 
 
             # Compute the mean PV, NPV, and soil fractions for the field
-            mean_PV = preds.PV_norm.mean(dim=['lon', 'lat'])
-            mean_NPV = preds.NPV_norm.mean(dim=['lon', 'lat'])
-            mean_Soil = preds.Soil_norm.mean(dim=['lon', 'lat'])
-
+            mean_PV = preds[f'PV_norm_{suffix}'].mean(dim=['lon', 'lat'])
+            mean_NPV = preds[f'NPV_norm_{suffix}'].mean(dim=['lon', 'lat'])
+            mean_Soil = preds[f'Soil_norm_{suffix}'].mean(dim=['lon', 'lat'])
             
             #########################
             # DATA CLEANING WITH SCL/MASK 
@@ -749,7 +751,7 @@ for yr in years:
             else:
                 save_path = os.path.join(results_dir, f'{str(yr)}_{crop.values[0]}_{parcel_name.replace(" ", "").replace("/", "")}_FC_timeseries_imgs_{file_suffix}_soil{soil_group_parcel}_precompute.png')
             
-            plot_timeseries_images(df_parcel, ds, dates_clean, dates_raw, preds, parcel_with_mgmt, buffer_plot, save_path)
+            plot_timeseries_images(df_parcel, ds, dates_clean, dates_raw, preds, parcel_with_mgmt, buffer_plot, save_path, suffix)
             print(save_path)
         
 

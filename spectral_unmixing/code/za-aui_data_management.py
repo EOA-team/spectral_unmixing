@@ -204,8 +204,8 @@ def predict_nn_in_batches(model, X_tensor, device, batch_size=10000):
 
 def predict_fc(parcel_shp, s2_data_dir, yr, soil_group, model_type, chunk_size=10):
 
-    s2_files = find_cubes(parcel_shp,s2_data_dir, [yr, yr-1])
-
+    s2_files = find_cubes(parcel_shp,s2_data_dir, [yr])
+   
     # Determine dominant soil group of parcel
     if soil_group is None:
         soil_cubes = []
@@ -236,7 +236,6 @@ def predict_fc(parcel_shp, s2_data_dir, yr, soil_group, model_type, chunk_size=1
         ds = xr.open_mfdataset([os.path.join(s2_data_dir, f) for f in s2_files], combine='by_coords').compute()
     except: # Use product_uri to merge
         ds = open_cubes_conflicting([os.path.join(s2_data_dir, f) for f in s2_files])
-
     ds = ds.drop_duplicates(dim='time', keep='first') # TO DO : prioritise the tiles in UTM 32
 
     #  Drop non-spatial variables (for clipping)
@@ -265,6 +264,7 @@ def predict_fc(parcel_shp, s2_data_dir, yr, soil_group, model_type, chunk_size=1
 
         df = ds_chunk.to_dataframe().reset_index()
         df[df == 65535] = np.nan
+        df = df[~(df[input_features] == 0).all(axis=1)] # areas that are outside of geom (after clip) get put to 0
         df_valid = df.dropna().copy()
 
         if df_valid.empty:
@@ -789,7 +789,7 @@ for yr in years:
     # Sample a parcel that has given management
     farm_polys_with_calendar = pd.merge(farms_polys, df, left_on=f'parzellen_id_{yr}', right_on='parzellen_id')
     try:
-        #parcel_with_mgmt = farm_polys_with_calendar[(farm_polys_with_calendar.activity==management) & (farm_polys_with_calendar.name=='Rte Bétonnée')]
+        #parcel_with_mgmt = farm_polys_with_calendar[(farm_polys_with_calendar.activity==management) & (farm_polys_with_calendar.name=='11 Pâturage boisé J-D')]
         parcel_with_mgmt = farm_polys_with_calendar[farm_polys_with_calendar.activity==management].sample(1)
         parcel_id = parcel_with_mgmt.parzellen_id.values[0]
         betr_ID = parcel_with_mgmt.betr_ID.values[0]
@@ -817,7 +817,7 @@ for yr in years:
         # PREDICT FC ON S2 DATA  
         ds, preds, soil_group_parcel = predict_fc(parcel_with_mgmt, s2_data_dir, yr, soil_group, model_type, chunk_size=10)
         #soil_group_parcel is either defined as 0, or the None should be changed to a nbr if found
-        
+       
         if ds is not None and soil_group_parcel is not None: 
 
             # Compute the mean PV, NPV, and soil fractions for the field

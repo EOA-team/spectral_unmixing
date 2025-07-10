@@ -276,6 +276,7 @@ def predict_fc(parcel_shp, s2_data_dir, yr, soil_group, model_type, chunk_size=1
 
         df = ds_chunk.to_dataframe().reset_index()
         df[df == 65535] = np.nan
+        df = df[~(df[input_features] == 0).all(axis=1)] # areas that are outside of geom (after clip) get put to 0
         df_valid = df.dropna().copy()
 
         if df_valid.empty:

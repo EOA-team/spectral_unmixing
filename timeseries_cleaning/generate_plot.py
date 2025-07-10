@@ -216,7 +216,7 @@ def predict_nn_in_batches(model, X_tensor, device, batch_size=10000):
 
 
 def predict_fc(parcel_shp, s2_data_dir, yr, soil_group, model_type, chunk_size=10):
-
+    
     s2_files = find_cubes(parcel_shp, s2_data_dir, [yr, yr-1])
 
     # Determine dominant soil group of parcel
@@ -278,6 +278,7 @@ def predict_fc(parcel_shp, s2_data_dir, yr, soil_group, model_type, chunk_size=1
 
         df = ds_chunk.to_dataframe().reset_index()
         df[df == 65535] = np.nan
+        df = df[~(df[input_features] == 0).all(axis=1)] # areas that are outside of geom (after clip) get put to 0
         df_valid = df.dropna().copy()
 
         if df_valid.empty:
@@ -1363,6 +1364,12 @@ yr = 2018
 crop = 'Sommerhafer'
 betrID = 20400014298
 parcel_name = '14Pt.Ependes'
+
+yr = 2021
+crop = 'Dauerweide intensiv'
+betrID = 50023000173
+parcel_name = '07LaPâtureM18'
+         
 """
 yr = 2020
 crop = 'Futterweizen'
