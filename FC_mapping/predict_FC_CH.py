@@ -151,6 +151,7 @@ def predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_gr
             return None, None
     else:
         # Create dummy soil group 0
+        print(f)
         ds_sample = xr.open_zarr(f, chunks={}).isel(time=0) #.reset_coords('time')
         soil_group = xr.DataArray(np.zeros((128, 128)), coords=ds_sample.coords, dims=ds_sample.dims)
         soil_ids = [0]
@@ -342,38 +343,37 @@ if __name__ == '__main__':
 
   s2_files = gdf_s2_files.filename.tolist()
   tot_files = len(s2_files)
-
+  print(tot_files)
  
   for i,f in enumerate(s2_files):
-    if i > 21339:
 
-        save_path = os.path.join(out_dir, f.split('/')[-1])
-        if not os.path.exists(save_path):
+    save_path = os.path.join(out_dir, f.split('/')[-1])
+    if not os.path.exists(save_path):
+    
+        print(f'Processing file {i}/{tot_files}...')
+        start = time.time()
+        # Predict with global and soil-specific models
+        ds_global, preds_global = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_group=0)
+        ds_soil, preds_soil = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10)
+    
+        # Combine results
+        preds_combined = preds_global.drop_vars('soil_group').copy()
+
+        for var in ['PV_norm', 'NPV_norm', 'Soil_norm']:
+            if preds_global is not None:
+                preds_combined[f'{var}_global'] = preds_global[var]
+            if preds_soil is not None:
+                preds_combined[f'{var}_soil'] = preds_soil[var]
+                preds_combined['soil_group'] = preds_soil['soil_group']
+
+        preds_combined = preds_combined.drop_vars(['PV_norm', 'NPV_norm', 'Soil_norm'])
         
-            print(f'Processing file {i}/{tot_files}...')
-            start = time.time()
-            # Predict with global and soil-specific models
-            ds_global, preds_global = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_group=0)
-            ds_soil, preds_soil = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10)
-        
-            # Combine results
-            preds_combined = preds_global.drop_vars('soil_group').copy()
+        # Save predictions
+        preds_combined.to_zarr(save_path, consolidated=True, mode='w')
+        print(f'...saved to {save_path}')
 
-            for var in ['PV_norm', 'NPV_norm', 'Soil_norm']:
-                if preds_global is not None:
-                    preds_combined[f'{var}_global'] = preds_global[var]
-                if preds_soil is not None:
-                    preds_combined[f'{var}_soil'] = preds_soil[var]
-                    preds_combined['soil_group'] = preds_soil['soil_group']
-
-            preds_combined = preds_combined.drop_vars(['PV_norm', 'NPV_norm', 'Soil_norm'])
-            
-            # Save predictions
-            preds_combined.to_zarr(save_path, consolidated=True, mode='w')
-            print(f'...saved to {save_path}')
-
-            end = time.time()
-            print('Took', end-start)
+        end = time.time()
+        print('Took', end-start)
 
 
     
