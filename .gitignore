@@ -1,0 +1,4 @@
+spectral_unmixing/results/ZA-AUI
+spectral_unmixing/data/*zarr
+timeseries_cleaning/fulltime/*png
+timeseries_cleaning/za-aui/*png
