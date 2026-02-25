@@ -34,8 +34,98 @@ def convert_pval_to_start(p_val):
     return star
 
 
+# === Settings ===
+model_type = "NN"
+metric = "RMSE"
+metric = metric.lower()
+
+df_scores = pd.read_pickle(f"../results/{model_type}_full_test_scores.pkl")
+
+# Keep only global or matching soil-specific models
+filtered_df = df_scores[
+    (df_scores['soil_group'] == 0) | (df_scores['soil_group'] == df_scores['test_soil'])
+].copy()
+
+filtered_df['Model'] = filtered_df['soil_group'].apply(
+    lambda x: 'Global' if x == 0 else 'Soil-specific'
+)
+
+# === Compute mean ± CI per class type ===
+summary = (
+    filtered_df
+    .groupby(['class_type', 'Model'])[metric]
+    .agg(['mean', 'std', 'count'])
+    .reset_index()
+)
+summary['ci'] = 1.96 * summary['std'] / np.sqrt(summary['count'])
+
+# === Compute statistical significance (t-test Global vs Soil-specific) ===
+p_values = {}
+for class_type in filtered_df['class_type'].unique():
+    global_vals = filtered_df[(filtered_df['Model'] == 'Global') & 
+                              (filtered_df['class_type'] == class_type)][metric].values
+    soil_vals = filtered_df[(filtered_df['Model'] == 'Soil-specific') & 
+                            (filtered_df['class_type'] == class_type)][metric].values
+    if len(global_vals) > 1 and len(soil_vals) > 1:
+        _, p_val = ttest_ind(global_vals, soil_vals, equal_var=False)
+        p_values[class_type] = p_val
+    else:
+        p_values[class_type] = None
 
 
+"""
+# === Plot simplified comparison ===
+sns.set(style="whitegrid")
+palette = {'Global': 'saddlebrown', 'Soil-specific': 'skyblue'}
+
+fig, axes = plt.subplots(1, 3, figsize=(12, 5), sharey=True)
+
+for ax, class_type in zip(axes, ['NPV', 'PV', 'SOIL']):
+    sub = summary[summary['class_type'] == class_type]    
+    # Bar plot
+    ax.bar(
+        sub['Model'],
+        sub['mean'],
+        yerr=sub['ci'],
+        capsize=4,
+        color=[palette[m] for m in sub['Model']],
+        edgecolor='black',
+        #hatch=[hatch_map[m] for m in sub['Model']],
+        width=1
+    )
+    ax.set_xticklabels([])
+
+    # Add text labels and significance star
+    for i, row in sub.reset_index(drop=True).iterrows():
+        ax.text(i, row['mean'] + row['ci'] * 1.05, f"{row['mean']:.3f}",
+                ha='center', va='bottom', fontsize=9)
+    
+    star = convert_pval_to_start(p_values.get(class_type))
+    if star:
+        ymax = sub['mean'].max() + sub['ci'].max() * 1.5
+        ax.text(0.5, ymax, star, ha='center', va='bottom', fontsize=14)
+    
+    ax.set_title(class_type)
+    ax.set_xlabel('')
+    if class_type == 'NPV':
+        ax.set_ylabel(f"{metric.upper()} [-]")
+    ax.set_ylim(0, summary['mean'].max() * 1.3)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.grid(False)
+
+# Legend
+handles = [
+    mpatches.Patch(facecolor='saddlebrown', edgecolor='black', label='Global'),
+    mpatches.Patch(facecolor='skyblue', edgecolor='black', label='Soil-specific')
+]
+axes[-1].legend(handles=handles, title='Model', loc='upper left', bbox_to_anchor=(1.05, 1))
+
+plt.tight_layout()
+plt.savefig(f"{model_type}_{metric}_barplot_global_vs_specific.png", dpi=300)
+"""
+
+"""
 # ======= PLOT GLOBAL vs SOIL SPECIFIC SCORES ===========
 # WITH STATISTICAL SINGIFICANCE OF DIFFERENCE BETWEEN GLOVAL/SPECIFIC MODELS
 
@@ -234,7 +324,7 @@ axes[-1].legend(handles=handles, title='Model', loc='upper left', bbox_to_anchor
 
 plt.tight_layout()
 plt.savefig(f"{model_type}_{metric}_barplot_ci.png")
-
+"""
 
 """
 # ======= PLOT GLOBAL vs SOIL SPECIFIC SCORES ===========
@@ -457,3 +547,7 @@ plt.tight_layout()
 
 plt.savefig(f'{model_type}_soiltest_scatters.png')
 """
+
+
+
+# ======= PLOT SCATTER PLOTS PER CLASS AND SOIL GROUP ON TEST SET ===========
