@@ -136,8 +136,27 @@ To generate a single farm plot (no gapfilling, just timeseries cleaning) use `ti
 
 ## 6. FC product
 
-Predict FC for every available S2 pixel:
+The following steps were followed to obtain weekly municipal mean FC values:
+
+First, predict FC for every available S2 pixel: 
 ```
 python FC_mapping/predict_FC_CH.py #runs on multi-CPU and needs GPU
 ``` 
+Prediction with global model and determined soil group will be saved in zarr files (same naming as Sentinel-2 files) top `~/mnt/eo-nas1/data/satellite/sentinel2/FC'
 
+Then extract valid data points per municipality (in fields, cloud free...), and save to .gpkg for each week. These are saved in yearly folders as `CH_fraction_weekly_{yr}/CH_fraction_{weeknbr}_soil_arable_raw.gpkg`.  The `soil` (vs `global`) in the name means predictions from soil specific models are taken, and `arable` (vs `grassland`) means grassland LNF areas are left out. 
+```
+python FC_mapping/create_datalayers.py
+```
+
+Finally, to produce specific aggregated plots, use the script. At this step, speicifc LNF codes can be passed to the main fucntion to filter for specific crop(s).
+```
+python FC_mapping/aggregate_FC.py
+```
+This contains several functions:
+- `plot_median_of_pixelmean`: get the weekly mean of each pixel, and aggregate with median over municipality. Consider only if >50% of the arable land of that muncipialtiy is covered by valid data. Results are saved to `CH_fraction_{weeknbr}_soil_arable_COMMUNE.gpkg` and `CH_fraction_{weeknbr}_soil_arable_COMMUNE.png`
+- `count_fraction_soil_above_50percent`: get the weekly mean of each pixel. Per municipality count the fraction of pixels in arable land that have FC soil >0.5. Consider only if >50% of the arable land of that muncipialtiy is covered by valid data. Results are saved to CH_fraction_soilthresh_{weeknbr}_COMMUNE.gpkg
+- `avg_baresoil_days`: get the weekly mean of each pixel. Over a year, compute how many days the pixel is bare (ie. FC soil > 0.5). Per municipality compute the average bare soil days. Results are saved to `CH_baredays_{level.upper()}.gpkg`
+
+
+Additional functions to create specific plots (including weekly fraction of bare soil per municipality) are provided in the script `report_plots.py`.

@@ -27,7 +27,47 @@ import time
 import pyproj
 from shapely.ops import transform
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import rasterio
+from rasterio.features import rasterize
+from rasterio.transform import from_bounds
+from rasterio.enums import Resampling
+from affine import Affine
 
+
+def get_intervals(year: int, freq: str = "month"):
+    """
+    Return index and dates for monthly or weekly intervals in a given year.
+    
+    Parameters
+    ----------
+    year : int
+        The year to generate intervals for.
+    freq : str, optional
+        Either "month" or "week".
+    
+    Returns
+    -------
+    intervals : list of (int, (start, end))
+        A list where each element is (index, (start_date, end_date)).
+    """
+
+    year_start = pd.Timestamp(f"{year}-01-01")
+    year_end = pd.Timestamp(f"{year}-12-31")
+    
+    if freq == "month":
+        periods = pd.period_range(year_start, year_end, freq="M")
+    elif freq == "week":
+        periods = pd.period_range(year_start, year_end, freq="W")
+    else:
+        raise ValueError("freq must be either 'month' or 'week'")
+    
+    intervals = []
+    for i, p in enumerate(periods, 1):
+        start = max(p.start_time, year_start)
+        end   = min(p.end_time, year_end)
+        intervals.append((i, (start, end)))
+
+    return intervals
 
 
 def extract_bounds_year(file):
@@ -492,7 +532,91 @@ def create_square(row):
     return box(x_min, y_min, x_max, y_max)
 
 
-def process_file(path, suffix, week_start, week_end, s2_dir, fields, lu_csv=None, lnf_codes=None):
+def rasterise_lnf(ds_week, fields_cube):
+    ds_week = ds_week.rio.write_crs(32632)
+    ds_week = ds_week.sortby("lat", ascending=False)
+    
+    height = ds_week.sizes["lat"]
+    width = ds_week.sizes["lon"]
+    trsfm = Affine(10, 0, ds_week.lon.min(),   # x
+                   0, -10, ds_week.lat.max()) # y
+    """
+    # Simple rasterise, keeping last geom intersecting pixel as LNF value
+    out_shape = (height, width)
+
+    # Rasterize lnf_code onto the same grid
+    lnf_raster = rasterize(
+        [(geom, value) for geom, value in zip(fields_cube.geometry, fields_cube["lnf_code"])],
+        out_shape=out_shape,
+        transform=trsfm,
+        fill=np.nan,   # background value
+        dtype="float32"
+    )
+
+    # Wrap in xarray with the same coords
+    lnf_da = xr.DataArray(
+        lnf_raster,
+        dims=("lat", "lon"),
+        coords={"lat": ds_week.lat, "lon": ds_week.lon},
+        name="lnf_code"
+    )
+    """
+    # High-res grid (10x finer)
+    highres_transform = trsfm * trsfm.scale(
+        1/10,
+        1/10
+    )
+    highres_shape = (height * 10, width * 10)
+
+    # Rasterize at high resolution
+    highres_raster = rasterize(
+        [(geom, value) for geom, value in zip(fields_cube.geometry, fields_cube["lnf_code"])],
+        out_shape=highres_shape,
+        transform=highres_transform,
+        fill=np.nan,
+        dtype="float32"
+    )
+
+    # Downsample back to original grid with majority rule
+    with rasterio.MemoryFile() as memfile:
+        with memfile.open(
+            driver="GTiff",
+            height=highres_shape[0],
+            width=highres_shape[1],
+            count=1,
+            dtype="float32",
+            transform=highres_transform,
+            crs=ds_week.rio.crs
+        ) as dataset:
+            dataset.write(highres_raster, 1)
+            
+            lnf_majority = dataset.read(
+                out_shape=(1, height, width),
+                resampling=Resampling.mode
+            )[0]
+
+    # Wrap in xarray with the same coords
+    lnf_da = xr.DataArray(
+        lnf_majority,
+        dims=("lat", "lon"),
+        coords={"lat": ds_week.lat, "lon": ds_week.lon},
+        name="lnf_code"
+    )
+    
+    # Add to your dataset
+    ds_week = ds_week.assign({"lnf_code": lnf_da})
+    """
+    # For exporting to rster, make top left coords the center 
+    ds_week = ds_week.assign_coords(
+        lon = ds_week.lon + 5,   # shift 5 m right 
+        lat = ds_week.lat - 5    # shift 5 m down 
+    )
+    ds_week.rename({'lat':'y', 'lon':'x'}).rio.write_crs(32632).lnf_code.rio.to_raster('lnf_test2.tif')
+    """
+    return ds_week
+
+
+def process_file_avgtime(path, suffix, week_start, week_end, s2_dir, fields, lu_csv=None, lnf_codes=None):
     try:
         ds = xr.open_zarr(path)
         if f'PV_norm_{suffix}' not in ds.data_vars:
@@ -579,8 +703,91 @@ def process_file(path, suffix, week_start, week_end, s2_dir, fields, lu_csv=None
         return None
 
 
-def create_hexplot_fraction(data_dir, canton_name, canton_poly, fields, suffix, week_start, week_end, save_path, swisstopo_landuse=None, lnf_codes=None):
+def process_file(path, suffix, week_start, week_end, s2_dir, fields, lu_csv=None, lnf_codes=None):
+    try:
+        ds = xr.open_zarr(path)
+        if f'PV_norm_{suffix}' not in ds.data_vars:
+            return None
+
+        ds_week = ds.sel(time=slice(week_start, week_end))
+        if ds_week.time.size == 0:
+            return None
+
+        # Load and clean S2
+        s2 = xr.open_zarr(os.path.join(s2_dir, os.path.basename(path))).load().sel(time=slice(week_start, week_end)) #[['s2_mask', 's2_SCL', 's2_B02']]
+        s2 = clean_dataset_optimized(s2, cloud_thresh=0.05, snow_thresh=0.1, shadow_thresh=0.1, cirrus_thresh=800)
+        s2 = s2.drop_duplicates(dim='time', keep='first')
+        mask = ds_week['product_uri'].isin(s2['product_uri'].compute().values).compute()
+        ds_week = ds_week.where(mask, drop=True)
+
+        if ds_week.time.size == 0:
+            return None
+        
+        if lu_csv is not None:
+            # Clip fields
+            f = os.path.basename(path)
+            bbox_32632 = box(int(f.split('_')[1]), int(f.split('_')[2]), int(f.split('_')[1]) + 1280, int(f.split('_')[2]) + 1280)
+            project = pyproj.Transformer.from_crs('EPSG:32632', 'EPSG:2056', always_xy=True).transform
+            bbox_2056 = transform(project, bbox_32632)
+            minx, miny, maxx, maxy = bbox_2056.bounds
+            lu_csv = lu_csv[(lu_csv['E_COORD'] >= minx) & (lu_csv['E_COORD'] -100 <= maxx) & 
+                            (lu_csv['N_COORD'] >= miny) & (lu_csv['N_COORD'] -100 <= maxy)]
     
+            if len(lu_csv):
+                lu_csv['geometry'] = lu_csv.apply(create_square, axis=1)
+                gdf_lu = gpd.GeoDataFrame(lu_csv, geometry='geometry', crs='EPSG:2056').to_crs(32632)
+            else:
+                return None
+            try:
+                ds_week = ds_week.rio.write_crs(32632).rio.set_spatial_dims(x_dim='lon', y_dim='lat', inplace=False).rio.clip(gdf_lu.geometry, all_touched=False)
+                #if ds_week.isel(time=0)['NPV_norm_global'].mean().compute()>0.5:
+                #    print(f, ds_week.time.values)
+            except:
+                return None # There is no data intersceting the field type 
+
+        else:
+            # Clip fields
+            f = os.path.basename(path)
+            bbox_32632 = box(int(f.split('_')[1]), int(f.split('_')[2])-1280, int(f.split('_')[1]) + 1280, int(f.split('_')[2]))
+            project = pyproj.Transformer.from_crs('EPSG:32632', 'EPSG:2056', always_xy=True).transform
+            bbox_2056 = transform(project, bbox_32632)
+            fields_cube = gpd.read_file(fields, bbox=bbox_2056).to_crs(32632)
+            fields_cube = fields_cube[fields_cube['geometry'].is_valid]
+            
+
+            if lnf_codes is not None:
+                fields_cube = fields_cube[fields_cube.lnf_code.isin(lnf_codes)]  
+            try:
+                # Rasterise LNF layer and add to dataset
+                ds_week = rasterise_lnf(ds_week, fields_cube)
+                # Currently coords are top left of pixel --> move to center for clipping
+                ds_week['lon'] = ds_week['lon'] + 5
+                ds_week['lat'] = ds_week['lat'] - 5
+                ds_week = ds_week.rio.write_crs(32632).rio.set_spatial_dims(x_dim='lon', y_dim='lat', inplace=False).rio.clip(fields_cube.geometry, all_touched=False)
+                # Put coords back to what they were
+                ds_week['lon'] = ds_week['lon'] - 5
+                ds_week['lat'] = ds_week['lat'] + 5
+            except Exception as e:
+                #print(e)
+                return None # There is no data intersceting the field type 
+            
+       
+        # Compute stats
+        df = ds_week[[f"PV_norm_{suffix}", f"NPV_norm_{suffix}", f"Soil_norm_{suffix}", "time", "lnf_code"]].to_dataframe().reset_index()
+        
+        # Filter 0 areas
+        df = df[~(df[[f'PV_norm_{suffix}', f'NPV_norm_{suffix}', f'Soil_norm_{suffix}']] == 0).all(axis=1)]
+        df = df.dropna(subset=[f'PV_norm_{suffix}', f'NPV_norm_{suffix}', f'Soil_norm_{suffix}'])
+
+        return df
+
+    except Exception as e:
+        print(f"Error processing {path}: {e}")
+        return None
+
+
+def create_gpkg_valid(data_dir, canton_name, canton_poly, fields, suffix, week_start, week_end, save_path, swisstopo_landuse=None, lnf_codes=None):
+  
     year = week_start.split('-')[0]  
 
     fc_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.zarr') and f.split('_')[3].startswith(year)]
@@ -592,7 +799,7 @@ def create_hexplot_fraction(data_dir, canton_name, canton_poly, fields, suffix, 
         gdf = gdf[gdf.name==canton_name].to_crs('EPSG:32632')
         gdf_FC_files = gdf_FC_files[gdf_FC_files.intersects(gdf.geometry.union_all())]
 
-    
+    lu_csv = None
     if swisstopo_landuse is not None:
         # Further filter grassland based on other landuse data layer
         lu_csv = pd.read_csv(swisstopo_landuse,
@@ -602,83 +809,18 @@ def create_hexplot_fraction(data_dir, canton_name, canton_poly, fields, suffix, 
         )
         lu_csv = lu_csv[lu_csv['AS_17'].isin([8, 9])].copy()
         
+    
     all_points = []
-    """
-    for i, path in enumerate(gdf_FC_files.filename.tolist()):
-        
-        try:
-            ds = xr.open_zarr(path)
-            
-            if f'PV_norm_{suffix}' not in ds.data_vars:
-                continue
-
-            ds_week = ds.sel(time=slice(week_start, week_end))
-            if ds_week.time.size == 0:
-                continue
-
-         
-            # Do cleaning: clouds/snow/shadow and duplicate timestamps
-            s2 = xr.open_zarr(os.path.join(s2_dir, os.path.basename(path))).sel(time=slice(week_start, week_end)) #[['s2_mask', 's2_SCL', 's2_B02']].load()
-            s2 = clean_dataset_optimized(s2, cloud_thresh=0.05, snow_thresh=0.1, shadow_thresh=0.1, cirrus_thresh=800)
-            s2 = s2.drop_duplicates(dim='time', keep='first')
-            mask = ds_week['product_uri'].isin(s2['product_uri'].compute().values).compute()
-            ds_week = ds_week.where(mask, drop=True)
-            #ds_week['s2_mask'] = s2['s2_mask'].transpose(*ds_week.dims)
-            #ds_week['s2_SCL']  = s2['s2_SCL'].transpose(*ds_week.dims)
-            #ds_week['s2_B02']  = s2['s2_B02'].transpose(*ds_week.dims)
-            #ds_week = clean_dataset_optimized(ds_week, cloud_thresh=0.05, snow_thresh=0.1, shadow_thresh=0.1, cirrus_thresh=800)
-            #ds_week = ds_week.drop_duplicates(dim='time', keep='first')
-            
-            # Clip for fields (open the fields file just in the extent of the datacube)
-            f = os.path.basename(path)
-            bbox_32632 = box(int(f.split('_')[1]), int(f.split('_')[2]), int(f.split('_')[1]) + 1280, int(f.split('_')[2]) + 1280)
-            project = pyproj.Transformer.from_crs('EPSG:32632', 'EPSG:2056', always_xy=True).transform
-            bbox_2056 = transform(project, bbox_32632)
-            fields_cube = gpd.read_file(fields, bbox=bbox_2056).to_crs(32632) 
-            fields_cube = fields_cube[fields_cube['geometry'].is_valid]
-
-        
-            if lnf_codes is not None:
-                fields_cube = fields_cube[fields_cube.lnf_code.isin(lnf_codes)]
-                
-            try:
-                ds_week = ds_week.rio.write_crs(32632).rio.set_spatial_dims(x_dim='lon', y_dim='lat', inplace=False).rio.clip(fields_cube.geometry, all_touched=False)
-            except:
-                continue
-            
-            # Mean, std, and count
-            week_mean = ds_week[[f"PV_norm_{suffix}", f"NPV_norm_{suffix}", f"Soil_norm_{suffix}"]].mean(dim="time")
-            week_std = ds_week[[f"PV_norm_{suffix}", f"NPV_norm_{suffix}", f"Soil_norm_{suffix}"]].std(dim="time")
-            valid_counts = ds_week[[f"PV_norm_{suffix}", f"NPV_norm_{suffix}", f"Soil_norm_{suffix}"]].notnull().sum(dim="time")
-
-            # Convert to DataFrames
-            df_mean = week_mean.to_dataframe().reset_index()
-            df_std = week_std.to_dataframe().reset_index().rename(columns={
-                f"PV_norm_{suffix}": "soil_std",
-                f"NPV_norm_{suffix}": "npv_std",
-                f"Soil_norm_{suffix}": "pv_std"
-            })
-            df_count = valid_counts.to_dataframe().reset_index().rename(columns={
-                f"PV_norm_{suffix}": "soil_count",
-                f"NPV_norm_{suffix}": "npv_count",
-                f"Soil_norm_{suffix}": "pv_count"
-            })
-
-            # Drop points outside of field geometries
-            df_mean = df_mean[~(df_mean[[f'PV_norm_{suffix}', f'NPV_norm_{suffix}', f'Soil_norm_{suffix}']] == 0).all(axis=1)] # areas that are outside of geom (after clip) get put to 0
-            df_std = df_std[~(df_std[['soil_std', 'npv_std', 'pv_std']] == 0).all(axis=1)] # areas that are outside of geom (after clip) get put to 0
-            df_count = df_count[~(df_count[['soil_count', 'npv_count', 'npv_count']] == 0).all(axis=1)] # areas that are outside of geom (after clip) get put to 0
-
-            df = df_mean.merge(df_std, on=['lat', 'lon']).merge(df_count, on=['lat', 'lon'])
-            all_points.append(df)
-            print(f'Processed file {i}/{len(gdf_FC_files.filename.tolist())}')
-
-        except Exception as e:
-            print(f"Error processing {path}: {e}")
-    """
-
     paths = gdf_FC_files.filename.tolist()
-    with ProcessPoolExecutor(max_workers=10) as executor:  
+    with ProcessPoolExecutor(max_workers=8) as executor:  
+        """ 
+        # If want to already average in time
+        futures = {
+            executor.submit(process_file_avgtime, path, suffix, week_start, week_end, s2_dir, fields, lu_csv, lnf_codes): path
+            for path in paths
+        }
+        """
+        # Keep every single individual timestamp
         futures = {
             executor.submit(process_file, path, suffix, week_start, week_end, s2_dir, fields, lu_csv, lnf_codes): path
             for path in paths
@@ -688,7 +830,8 @@ def create_hexplot_fraction(data_dir, canton_name, canton_poly, fields, suffix, 
             result = future.result()
             if result is not None:
                 all_points.append(result)
-            print(f"Processed file {i + 1}/{len(paths)}")
+            if (i + 1) % 50 == 0:
+                print(f"Processed file {i + 1}/{len(paths)}")
    
 
     if not len(all_points):
@@ -698,135 +841,19 @@ def create_hexplot_fraction(data_dir, canton_name, canton_poly, fields, suffix, 
     if not len(df_all):
         return
     
-    fig, axes = plt.subplots(ncols=3, nrows=3, figsize=(40, 24), constrained_layout=True)
-
-    # Common parameters
-    vmin, vmax = 0, 100
-    gridsize = 20
-    cmap_soil = LinearSegmentedColormap.from_list("white_brown", ["white", "saddlebrown"])
-    cmap_npv = LinearSegmentedColormap.from_list("white_brown", ["white", "goldenrod"])
-    cmap_pv = 'Greens'
-    crs = 'EPSG:32632'
-    basemap = cx.providers.SwissFederalGeoportal.NationalMapColor
-
-    # -------------------------
-    # Row 0: Mean Fractions
-    # -------------------------
-
-    # 1. Soil Mean
-    hb1 = axes[0, 0].hexbin(df_all["lon"], df_all["lat"], C=df_all[f"Soil_norm_{suffix}"]*100,
-                            gridsize=gridsize, cmap=cmap_soil,
-                            reduce_C_function=np.nanmean, vmin=vmin, vmax=vmax)
-    cx.add_basemap(axes[0, 0], source=basemap, crs=crs)
-    axes[0, 0].set_title(f"Average fraction of bare soil \n{week_start} – {week_end}")
-    axes[0, 0].set_xlabel("Longitude")
-    axes[0, 0].set_ylabel("Latitude")
-    fig.colorbar(hb1, ax=axes[0, 0], label="%")
-
-    # 2. NPV Mean
-    hb2 = axes[0, 1].hexbin(df_all["lon"], df_all["lat"], C=df_all[f"NPV_norm_{suffix}"]*100,
-                            gridsize=gridsize, cmap=cmap_npv,
-                            reduce_C_function=np.nanmean, vmin=vmin, vmax=vmax)
-    cx.add_basemap(axes[0, 1], source=basemap, crs=crs)
-    axes[0, 1].set_title(f"Average fraction of residue \n{week_start} – {week_end}")
-    axes[0, 1].set_xlabel("Longitude")
-    axes[0, 1].set_ylabel("Latitude")
-    fig.colorbar(hb2, ax=axes[0, 1], label="%")
-
-    # 3. PV Mean
-    hb3 = axes[0, 2].hexbin(df_all["lon"], df_all["lat"], C=df_all[f"PV_norm_{suffix}"]*100,
-                            gridsize=gridsize, cmap=cmap_pv,
-                            reduce_C_function=np.nanmean, vmin=vmin, vmax=vmax)
-    cx.add_basemap(axes[0, 2], source=basemap, crs=crs)
-    axes[0, 2].set_title(f"Average fraction of vegetation \n{week_start} – {week_end}")
-    axes[0, 2].set_xlabel("Longitude")
-    axes[0, 2].set_ylabel("Latitude")
-    fig.colorbar(hb3, ax=axes[0, 2], label="%")
-
-    # -------------------------
-    # Row 1: Std Dev
-    # -------------------------
-
-    # You can adjust std vmax if it’s noisy or narrow:
-    std_vmax = df_all[['soil_std', 'npv_std', 'pv_std']].max().max()
-
-    # 1. Soil Std
-    hb4 = axes[1, 0].hexbin(df_all["lon"], df_all["lat"], C=df_all["soil_std"],
-                            gridsize=gridsize, cmap='Reds',
-                            reduce_C_function=np.nanmean, vmin=0, vmax=std_vmax)
-    cx.add_basemap(axes[1, 0], source=basemap, crs=crs)
-    axes[1, 0].set_title(f"Standard deviation of bare soil fraction\n{week_start} – {week_end}")
-    axes[1, 0].set_xlabel("Longitude")
-    axes[1, 0].set_ylabel("Latitude")
-    fig.colorbar(hb4, ax=axes[1, 0], label="Std Dev")
-
-    # 2. NPV Std
-    hb5 = axes[1, 1].hexbin(df_all["lon"], df_all["lat"], C=df_all["npv_std"],
-                            gridsize=gridsize, cmap='Reds',
-                            reduce_C_function=np.nanmean, vmin=0, vmax=std_vmax)
-    cx.add_basemap(axes[1, 1], source=basemap, crs=crs)
-    axes[1, 1].set_title(f"Standard deviation of NPV fraction\n{week_start} – {week_end}")
-    axes[1, 1].set_xlabel("Longitude")
-    axes[1, 1].set_ylabel("Latitude")
-    fig.colorbar(hb5, ax=axes[1, 1], label="Std Dev")
-
-    # 3. PV Std
-    hb6 = axes[1, 2].hexbin(df_all["lon"], df_all["lat"], C=df_all["pv_std"],
-                            gridsize=gridsize, cmap='Reds',
-                            reduce_C_function=np.nanmean, vmin=0, vmax=std_vmax)
-    cx.add_basemap(axes[1, 2], source=basemap, crs=crs)
-    axes[1, 2].set_title(f"Standard deviation of PV fraction\n{week_start} – {week_end}")
-    axes[1, 2].set_xlabel("Longitude")
-    axes[1, 2].set_ylabel("Latitude")
-    fig.colorbar(hb6, ax=axes[1, 2], label="Std Dev")
-
-
-    # -------------------------
-    # Row 3: Valid pixel counts
-    # -------------------------
-
-    # 1. Soil
-    hb7 = axes[2, 0].hexbin(df_all["lon"], df_all["lat"], C=df_all["soil_count"],
-                            gridsize=gridsize, cmap='Reds',
-                            reduce_C_function=np.sum)
-    cx.add_basemap(axes[2, 0], source=basemap, crs=crs)
-    axes[2, 0].set_title(f"alid pixel count bare soil\n{week_start} – {week_end}")
-    axes[2, 0].set_xlabel("Longitude")
-    axes[2, 0].set_ylabel("Latitude")
-    fig.colorbar(hb7, ax=axes[2, 0], label="Mean Fraction")
-
-    # 2. NPV
-    hb8 = axes[2, 1].hexbin(df_all["lon"], df_all["lat"], C=df_all["npv_count"],
-                            gridsize=gridsize, cmap='Reds',
-                            reduce_C_function=np.sum)
-    cx.add_basemap(axes[2, 1], source=basemap, crs=crs)
-    axes[2, 1].set_title(f"alid pixel count NPV\n{week_start} – {week_end}")
-    axes[2, 1].set_xlabel("Longitude")
-    axes[2, 1].set_ylabel("Latitude")
-    fig.colorbar(hb8, ax=axes[2, 1], label="Mean Fraction")
-
-    # 3. PV
-    hb9 = axes[2, 2].hexbin(df_all["lon"], df_all["lat"], C=df_all["pv_count"],
-                            gridsize=gridsize, cmap='Reds',
-                            reduce_C_function=np.sum)
-    cx.add_basemap(axes[2, 2], source=basemap, crs=crs)
-    axes[2, 2].set_title(f"Valid pixel count PV\n{week_start} – {week_end}")
-    axes[2, 2].set_xlabel("Longitude")
-    axes[2, 2].set_ylabel("Latitude")
-    fig.colorbar(hb9, ax=axes[2, 2], label="Mean Fraction")
-
-    # Set consistent axis limits
-    xlim = (260000, 620000) #(df_all["lon"].min() - 1000, df_all["lon"].max() + 1000)
-    ylim = (5050000, 5300000) #(df_all["lat"].min() - 1000, df_all["lat"].max() + 1000)
-    for ax_row in axes:
-        for ax in ax_row:
-            ax.set_xlim(xlim)
-            ax.set_ylim(ylim)
-
-
-    # Save
-    plt.savefig(save_path)
-
+    gdf = gpd.GeoDataFrame(
+        df_all,
+        geometry=gpd.points_from_xy(df_all['lon'], df_all['lat']),
+        crs='EPSG:32632'
+    )
+    # Save as GeoPackage
+    """ 
+    if os.path.exists(save_path):
+        os.remove(save_path)
+    """
+    gdf.to_file(save_path, driver="GPKG")
+    print(f"Saved GeoPackage for {save_path}")
+    
 
     return
 
@@ -837,68 +864,41 @@ if __name__ == '__main__':
 
     FC_dir = os.path.expanduser('~/mnt/eo-nas1/data/satellite/sentinel2/FC')
     s2_dir = os.path.expanduser('~/mnt/eo-nas1/data/satellite/sentinel2/raw/CH')
-    year = 2021
+    year = 2023
     canton_poly = 'swissBOUNDARIES3D_1_5_LV95_LN02.gpkg'
-    canton_name = None #'Valais'
+    canton_name = None
     fields = os.path.expanduser(f'~/mnt/eo-nas1/data/landuse/raw/lnf{year}.gpkg')
-    #field_raster = os.path.expanduser(f'~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/pv_npv_members/crop_maps/lnf_code_{year}.tif')
     out_dir = os.path.expanduser('~/mnt/eo-nas1/data/satellite/sentinel2/FC_binary')
-    suffix = 'global'
+    suffix = 'soil'
+    
+    grass = False # if True, creates map for grasslands. If False, will create for arable land
+    swisstopo_landuse = None #os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/EVI_CH/ag-b-00.03-37-area-current-csv.csv') # Classification on areal imagey of landuse, classes 8 and 9 are grassland
+
+    time_step = 'week' # 'month'
+
     
 
     ###########################
-    # AVG FRACTION: avg PV/NPV/Soil fraction per hex --> filter first for some lnf code
+    # Save all data as point geometries with FC values
+   
+    # --- Load crop classification ---
+    crop_labels = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/028_Erosion/Erosion/LNF_code_classification_20251031.xlsx')
+    crop_names = pd.read_excel(crop_labels, sheet_name='arable_grassland')
+    lnf_codes_arable = crop_names[crop_names['Type'] == 'Arable'].LNF_code.tolist()
+    lnf_codes_grassland = crop_names[crop_names['Type'] == 'Grassland'].LNF_code.tolist()
 
-
-    grass = True # if True, creates map for grasslands. If False, will create for arable land
-    swisstopo_landuse = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/EVI_CH/ag-b-00.03-37-area-current-csv.csv') # Classification on areal imagey of landuse, classes 8 and 9 are grassland
-
-
-    ### Open data on LNF codes
-    crop_labels = os.path.expanduser('~/mnt/eo-nas1/data/landuse/documentation/LNF_code_classification_20250217.xlsx')
-    crop_names = pd.read_excel(crop_labels, sheet_name=1) # important cols: LNF_code, categories2024
-    # Drop some categories
-    to_drop = ['Apples', 'Asparagus', 'Berries', 'Biodiversity promotion area', 'Chestnut', 'Fallow', 'Fallow extensive', 'Field margin',\
-            'Flowerstrips', 'Forest', 'Forest Pasture', 'Gardens', 'Greenhouses', 'Greenhouse', 'Hedge', 'Non agriculture', 'Nurseries',\
-            'Orchards', 'Orchards other', 'Other', 'Other indoor', 'Paths natural', 'Pears', 'Permaculture', 'Special cultures', 'Tree Crop',\
-            'Vines'] 
-    crop_names = crop_names[~crop_names.categories2024.isin(to_drop)]
-    # Group up some labels
-    crop_names.loc[crop_names.categories2024.isin(['Meadow', 'Meadow extensiv', 'Meadow other', 'Meadow permanent', 'Meadow sown', 'Summering Meadow', 'Summering Meadow Extensiv']), 'categories2024'] = 'Grassland'
-    crop_names.loc[crop_names.categories2024.isin(['Pasture', 'Pasture extensiv', 'Summering Pasture']), 'categories2024'] = 'Grassland'
-
-    # Create mapping from LNF code to crop category
-    #lnf_mapping = dict(zip(crop_names["LNF_code"], crop_names["categories2024"]))
-
-    
+    # Ensure results directory
+    os.makedirs(f'CH_fraction_{time_step}ly_{year}', exist_ok=True)
 
     if grass: 
-        # Get codes of grassland
-        lnf_codes = crop_names[crop_names.categories2024=='Grassland'].LNF_code.tolist()
-
-        for m in range(1,13):
-            if m < 10:
-                month_start = f'0{m}'
-                month_end = f'0{m+1}' if m<9 else str(m+1)
-            else:
-                month_start = str(m)
-                month_end = str(m+1) if m!=12 else '01'
-            create_hexplot_fraction(data_dir=FC_dir, canton_name=canton_name, canton_poly=canton_poly, fields=fields, suffix=suffix, week_start=f'2021-{month_start}-01', week_end=f'2021-{month_end}-01', swisstopo_landuse=swisstopo_landuse, lnf_codes=lnf_codes, save_path=f'CH_fraction_monthly/CH_fraction_{m}_{suffix}_grass_lu_ndsi2.png')
-    
-
+        for i, (start, end) in get_intervals(year, time_step):
+            create_gpkg_valid(data_dir=FC_dir, canton_name=canton_name, canton_poly=canton_poly, fields=fields, suffix=suffix, week_start=str(start), week_end=str(end), swisstopo_landuse=swisstopo_landuse, lnf_codes=lnf_codes_grassland, save_path=f'CH_fraction_{time_step}ly_{year}/CH_fraction_{i}_{suffix}_grass_raw.gpkg')
+               
     else:
-        # Get code of arable land
-        lnf_codes = crop_names[crop_names.categories2024!='Grassland'].LNF_code.tolist()
-
-        for m in range(1,13):
-            if m < 10:
-                month_start = f'0{m}'
-                month_end = f'0{m+1}' if m<9 else str(m+1)
-            else:
-                month_start = str(m)
-                month_end = str(m+1) if m!=12 else '01'
-            create_hexplot_fraction(data_dir=FC_dir, canton_name=canton_name, canton_poly=canton_poly, fields=fields, suffix=suffix, week_start=f'2021-{month_start}-01', week_end=f'2021-{month_end}-01', lnf_codes=lnf_codes, save_path=f'CH_fraction_monthly/CH_fraction_{m}_{suffix}_arable_debug.png')
-    
+        for i, (start, end) in get_intervals(year, time_step):
+            print(f'Extract data for week {i}')
+            
+            create_gpkg_valid(data_dir=FC_dir, canton_name=canton_name, canton_poly=canton_poly, fields=fields, suffix=suffix, week_start=str(start), week_end=str(end), lnf_codes=lnf_codes_arable, save_path=f'CH_fraction_{time_step}ly_{year}/CH_fraction_{i}_{suffix}_arable_raw.gpkg')
 
 
 

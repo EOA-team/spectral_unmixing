@@ -4,7 +4,7 @@ Predict using global model, as well as soil-specific models
 """
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0,1,2,3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -18,13 +18,15 @@ import math
 import joblib
 from pathlib import Path
 import sys
-sys.path.insert(0, '/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_unmixing')
+sys.path.insert(0, '/mnt/eo-nas1/eoa-share/projects/028_Erosion/Erosion/spectral_unmixing')
 from models import MODELS
 import time
 from shapely.geometry import box
 from shapely import unary_union
 from scipy.ndimage import distance_transform_edt
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
+import shutil
 
 
 
@@ -123,6 +125,23 @@ def find_soil_group(coords, soil_dir):
   return soil_group
 
 
+def load_all_models(model_dir, model_type, soil_groups):
+    models_dict = {}
+
+    for soil_group in soil_groups:
+        soil_group = int(soil_group)
+        models_dict[soil_group] = {}
+
+        for iteration in range(1, 6):  # 5 iterations
+            models_dict[soil_group][iteration] = {
+                'PV': joblib.load(os.path.join(model_dir, f'{model_type}_CLASS2_SOIL{soil_group}_ITER{iteration}.pkl')),
+                'NPV': joblib.load(os.path.join(model_dir, f'{model_type}_CLASS1_SOIL{soil_group}_ITER{iteration}.pkl')),
+                'Soil': joblib.load(os.path.join(model_dir, f'{model_type}_CLASS3_SOIL{soil_group}_ITER{iteration}.pkl'))
+            }
+
+    return models_dict
+
+
 def predict_nn_in_batches(model, X_tensor, device, batch_size=10000):
     model.eval()
     preds = []
@@ -134,12 +153,13 @@ def predict_nn_in_batches(model, X_tensor, device, batch_size=10000):
     return torch.cat(preds).numpy()
 
 
-def predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_group=None):
+def predict_fc(f, models_dict, soil_dir, chunk_size=10, forced_soil_group=None): #model_dir, model_type,
 
     input_features = ['s2_B02','s2_B03','s2_B04','s2_B05','s2_B06','s2_B07','s2_B08','s2_B8A','s2_B11','s2_B12']
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     df_preds_list = []  
 
+    st = time.time()
     # === Load soil group data ===  
     if forced_soil_group is None: 
         # Determine soil group of each pixel parcel (fillna with nearest neighbor)
@@ -151,25 +171,28 @@ def predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_gr
             return None, None
     else:
         # Create dummy soil group 0
-        print(f)
         ds_sample = xr.open_zarr(f, chunks={}).isel(time=0) #.reset_coords('time')
         soil_group = xr.DataArray(np.zeros((128, 128)), coords=ds_sample.coords, dims=ds_sample.dims)
         soil_ids = [0]
-
+    print('Find soil group', time.time()-st)
 
     # === Load full dataset ===
+    st = time.time()
     ds = xr.open_zarr(f)
     ds['soil_group'] = soil_group
     ds = ds.swap_dims({'time': 'product_uri'})
-    ds = ds[input_features + ['soil_group', 'product_uri']].load() # only load needed vars to memory
+    ds = ds[input_features + ['soil_group', 'product_uri']].load() 
+    print('Load data', time.time()-st)
 
+    st = time.time()
     df_full = ds.to_dataframe().reset_index()
     df_full[input_features] = df_full[input_features].replace(65535, np.nan)
-
+    print('To df', time.time()-st)
     
     for soil_group in soil_ids:
         soil_group = int(soil_group)
-
+        models = models_dict[soil_group]
+        """
         # Pre-load models
         models = {}
         for iteration in range(1, 6):
@@ -178,14 +201,14 @@ def predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_gr
               'NPV': joblib.load(os.path.join(model_dir, f'{model_type}_CLASS1_SOIL{soil_group}_ITER{iteration}.pkl')),
               'Soil': joblib.load(os.path.join(model_dir, f'{model_type}_CLASS3_SOIL{soil_group}_ITER{iteration}.pkl'))
             }
-
+        """
         # Filter for soil group
         df_soil = df_full[df_full['soil_group'] == soil_group]
 
         # === Loop over time in chunks ===
         uri_coords = df_soil['product_uri'].unique()
         num_chunks = math.ceil(len(uri_coords) / chunk_size)
-
+        st = time.time()
         for i in range(num_chunks):
             uris_chunk = uri_coords[i * chunk_size: (i + 1) * chunk_size]
             df_chunk = df_soil[df_soil['product_uri'].isin(uris_chunk)].copy()
@@ -235,18 +258,23 @@ def predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_gr
             
         if not len(df_preds_list):
             return None, None
-        
+        print('Predict', time.time()-st)
 
+    st = time.time()
     # === Combine all predictions ===
-    df_all = pd.concat(df_preds_list, ignore_index=True)
-    df_all.set_index(['lat', 'lon', 'product_uri'], inplace=True)
-    preds = df_all[['PV', 'NPV', 'Soil', 'soil_group']].to_xarray()
-
+    df_all = pd.concat(df_preds_list, ignore_index=True, copy=False)
+    print('Concat', time.time()-st)
+    st = time.time()
+    #df_all.set_index(['lat', 'lon', 'product_uri'], inplace=True)
+    preds = df_all.set_index(['lat', 'lon', 'product_uri'])[['PV', 'NPV', 'Soil', 'soil_group']].to_xarray()
+    print('To xarray', time.time()-st)
+    st = time.time()
     # Add time coords and restore dims
     time_coords = xr.apply_ufunc(extract_time, preds['product_uri'])
     preds = preds.assign_coords(time=("product_uri", time_coords.data))
     preds = preds.swap_dims({"product_uri": "time"}).reset_coords("product_uri", drop=False)
-
+    print('Restore dims', time.time()-st)
+    st = time.time()
     # Clip and normalize
     for key in ['PV', 'NPV', 'Soil']:
         preds[f'{key}_norm'] = preds[key].clip(min=0)
@@ -254,16 +282,160 @@ def predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_gr
     denom = preds['PV_norm'] + preds['NPV_norm'] + preds['Soil_norm']
     for key in ['PV', 'NPV', 'Soil']:
         preds[f'{key}_norm'] /= denom
-
+    print('Clip and norm', time.time()-st)
+    st = time.time()
     # Sort by time
     preds = preds.sortby('time')
     ds = ds.sortby('time').swap_dims({"product_uri": "time"}).reset_coords("product_uri", drop=False)
-
+    print('Sortby time', time.time()-st)
+   
 
     return ds, preds
 
 
-def process_file(f, model_dir, model_type, soil_dir, out_dir):
+def predict_fc_optim(f, models_dict, soil_dir, chunk_size=10, forced_soil_group=None): #model_dir, model_type,
+
+    input_features = ['s2_B02','s2_B03','s2_B04','s2_B05','s2_B06','s2_B07','s2_B08','s2_B8A','s2_B11','s2_B12']
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    df_preds_list = []  
+
+    # === Load soil group data ===  
+    if forced_soil_group is None: 
+        # Determine soil group of each pixel parcel (fillna with nearest neighbor)
+        coords = f'{f.split("_")[1]}_{f.split("_")[2]}'
+        soil_group = find_soil_group(coords, soil_dir).rename({'y':'lat', 'x':'lon'})
+        soil_ids = np.unique(soil_group.values)
+        soil_ids = soil_ids[~np.isnan(soil_ids)]
+        if not len(soil_ids):
+            return None, None
+    else:
+        # Create dummy soil group 0
+        ds_sample = xr.open_zarr(f, chunks={}).isel(time=0) #.reset_coords('time')
+        soil_group = xr.DataArray(np.zeros((128, 128)), coords=ds_sample.coords, dims=ds_sample.dims)
+        soil_ids = [0]
+
+
+    # === Load full dataset ===
+    ds = xr.open_zarr(f)
+    ds['soil_group'] = soil_group
+    ds = ds.swap_dims({'time': 'product_uri'})
+    ds = ds[input_features + ['soil_group', 'product_uri']].load() 
+    ds = ds.where(ds != 65535)
+
+    preds_list = []
+    
+    for soil_group in soil_ids:
+        soil_group = int(soil_group)
+        models = models_dict[soil_group]
+        
+        # Filter for soil group
+        ds_sub = ds.where(ds['soil_group'] == soil_group, drop=True)
+        if ds_sub.sizes == {} or any(v == 0 for v in ds_sub.sizes.values()):
+            continue
+
+        # Extract as array (shape: [n_uri, n_lat, n_lon, n_features])
+        X = ds_sub[input_features].to_array().transpose("product_uri", "lat", "lon", "variable").values
+        X = X.reshape(-1, len(input_features)).astype("float32") / 10000
+
+        # Filter valid samples
+        valid_mask = np.isfinite(X).all(axis=1)
+        if not np.any(valid_mask):
+            continue
+        X = X[valid_mask]
+
+        # Create coordinate arrays for reconstruction
+        uris = ds_sub['product_uri'].values
+        lat = ds_sub['lat'].values
+        lon = ds_sub['lon'].values
+        uri_grid, lat_grid, lon_grid = np.meshgrid(uris, lat, lon, indexing='ij')
+        uri_valid = uri_grid.ravel()[valid_mask]
+        lat_valid = lat_grid.ravel()[valid_mask]
+        lon_valid = lon_grid.ravel()[valid_mask]
+
+        # === Loop over time in chunks ===
+        n = len(X)
+        num_chunks = math.ceil(n / chunk_size)
+        preds = np.empty((n, 3), dtype=np.float32)
+
+        for i in range(num_chunks):
+            start = i * chunk_size
+            end = min((i + 1) * chunk_size, n)
+            X_batch = X[start:end]
+
+            # Predict across 5 iterations
+            predictions_pv, predictions_npv, predictions_soil = [], [], []
+            
+            for iteration in range(1, 6):
+                # Get pre-loaded models
+                model_pv = models[iteration]["PV"]
+                model_npv = models[iteration]["NPV"]
+                model_soil = models[iteration]["Soil"]
+               
+                if model_type == 'NN':
+                    X_tensor = torch.FloatTensor(X_batch)
+                    pv_pred = predict_nn_in_batches(model_pv, X_tensor, device)
+                    npv_pred = predict_nn_in_batches(model_npv, X_tensor, device)
+                    soil_pred = predict_nn_in_batches(model_soil, X_tensor, device)
+                    del X_tensor, model_pv, model_npv, model_soil
+                    torch.cuda.empty_cache()
+                else:
+                    pv_pred = model_pv.predict(X)
+                    npv_pred = model_npv.predict(X)
+                    soil_pred = model_soil.predict(X)
+
+                predictions_pv.append(pv_pred)
+                predictions_npv.append(npv_pred)
+                predictions_soil.append(soil_pred)
+
+            # Average and store
+            preds[start:end, 0] = np.mean(predictions_pv, axis=0).squeeze()
+            preds[start:end, 1] = np.mean(predictions_npv, axis=0).squeeze()
+            preds[start:end, 2] = np.mean(predictions_soil, axis=0).squeeze()
+           
+        # === Convert predictions to xarray ===
+        preds_group = xr.Dataset(
+            {
+                "PV": (("point",), preds_arr[:, 0]),
+                "NPV": (("point",), preds_arr[:, 1]),
+                "Soil": (("point",), preds_arr[:, 2]),
+                "soil_group": (("point",), np.full(n, soil_group)),
+            },
+            coords={
+                "product_uri": ("point", uri_valid),
+                "lat": ("point", lat_valid),
+                "lon": ("point", lon_valid),
+            },
+        )
+
+        preds_list.append(preds_group)
+
+    # === Combine all soil groups ===
+    if not preds_list:
+        return None, None
+
+    preds = xr.concat(preds_list, dim="point")
+
+    # === Add time coordinates and normalize ===
+    time_coords = xr.apply_ufunc(extract_time, preds['product_uri'])
+    preds = preds.assign_coords(time=("point", time_coords.data))
+
+    # Normalize (avoid division by 0)
+    for key in ['PV', 'NPV', 'Soil']:
+        preds[f'{key}_norm'] = preds[key].clip(min=0)
+
+    denom = preds['PV_norm'] + preds['NPV_norm'] + preds['Soil_norm']
+    denom = denom.where(denom != 0, np.nan)
+
+    for key in ['PV', 'NPV', 'Soil']:
+        preds[f'{key}_norm'] = preds[f'{key}_norm'] / denom
+
+    # === Sort by time for consistency ===
+    preds = preds.sortby('time')
+
+    return ds, preds
+
+
+def process_file_old(f, model_dir, model_type, soil_dir, out_dir):
     try:
         print(f'Processing file {f}...')
         start = time.time()
@@ -295,19 +467,49 @@ def process_file(f, model_dir, model_type, soil_dir, out_dir):
         print(f'Error processing file {f}: {e}')
 
 
+def process_file(i, f, model_dir, model_type, soil_dir, out_dir):
+    
+    save_path = os.path.join(out_dir, os.path.basename(f))
+    if os.path.exists(save_path):
+        return i, f"Skipped (already exists) {f}", 0
+
+    try:
+        start = time.time()
+        # Predict with global and soil-specific models
+        ds_global, preds_global = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_group=0)
+        ds_soil, preds_soil = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10)
+    
+        # Combine results
+        preds_combined = preds_global.drop_vars('soil_group').copy()
+
+        for var in ['PV_norm', 'NPV_norm', 'Soil_norm']:
+            if preds_global is not None:
+                preds_combined[f'{var}_global'] = preds_global[var]
+            if preds_soil is not None:
+                preds_combined[f'{var}_soil'] = preds_soil[var]
+                preds_combined['soil_group'] = preds_soil['soil_group']
+
+        preds_combined = preds_combined.drop_vars(['PV_norm', 'NPV_norm', 'Soil_norm'])
+        preds_combined.to_zarr(save_path, consolidated=True, mode='w')
+        elapsed = time.time() - start
+        return i, f"Done {f}", elapsed
+
+    except Exception as e:
+        return i, f"Error: {e}", 0
+
 
 if __name__ == '__main__':
 
 
   # PATHS
-  s2_dir = os.path.expanduser('~/mnt/eo-nas1/data/satellite/sentinel2/raw/CH')
+  s2_dir = '/srv/data/sentinel2' #os.path.expanduser('~/mnt/eo-nas1/data/satellite/sentinel2/raw/CH')
   out_dir = os.path.expanduser('~/mnt/eo-nas1/data/satellite/sentinel2/FC')
   soil_dir = os.path.expanduser('~/mnt/eo-nas1/data/satellite/sentinel2/DLR_soilsuite_preds/')
-  model_dir = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/Erosion/spectral_unmixing/models')
+  model_dir = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/028_Erosion/Erosion/spectral_unmixing/models')
   landuse_data = os.path.expanduser('~/mnt/eo-nas1/eoa-share/projects/010_CropCovEO/EVI_CH/ag-b-00.03-37-area-current-csv.csv')
 
   # PARAMS
-  year = 2021
+  year = 2022
   model_type = 'NN'
 
   
@@ -343,19 +545,26 @@ if __name__ == '__main__':
 
   s2_files = gdf_s2_files.filename.tolist()
   tot_files = len(s2_files)
-  print(tot_files)
- 
-  for i,f in enumerate(s2_files):
 
+  # === Load models once ===
+  soil_groups = [0, 1, 2, 3, 4, 5]
+  models_dict = load_all_models(model_dir, model_type, soil_groups)
+
+  # === Predict on all Sentinel-2 files ===
+  for i,f in enumerate(s2_files):
+    
     save_path = os.path.join(out_dir, f.split('/')[-1])
     if not os.path.exists(save_path):
     
         print(f'Processing file {i}/{tot_files}...')
         start = time.time()
         # Predict with global and soil-specific models
-        ds_global, preds_global = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_group=0)
-        ds_soil, preds_soil = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10)
-    
+        #ds_global, preds_global = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10, forced_soil_group=0)
+        #ds_soil, preds_soil = predict_fc(f, model_dir, model_type, soil_dir, chunk_size=10)
+        ds_global, preds_global = predict_fc(f, models_dict, soil_dir, chunk_size=50, forced_soil_group=0)
+        ds_soil, preds_soil = predict_fc(f, models_dict, soil_dir, chunk_size=50)
+
+        st = time.time()
         # Combine results
         preds_combined = preds_global.drop_vars('soil_group').copy()
 
@@ -365,26 +574,30 @@ if __name__ == '__main__':
             if preds_soil is not None:
                 preds_combined[f'{var}_soil'] = preds_soil[var]
                 preds_combined['soil_group'] = preds_soil['soil_group']
-
         preds_combined = preds_combined.drop_vars(['PV_norm', 'NPV_norm', 'Soil_norm'])
-        
-        # Save predictions
+        print('Combine soil and global', time.time()-st)
+
+        # Save predictions (faster: write to scratch first and then move)
+        st = time.time()
+        #local_path = os.path.expanduser(f"~/scratch/{os.path.basename(save_path)}")
+        #preds_combined.to_zarr(local_path, consolidated=True, mode='w')
+        #shutil.move(local_path, save_path)
         preds_combined.to_zarr(save_path, consolidated=True, mode='w')
+        print('Saving', time.time()-st)
         print(f'...saved to {save_path}')
 
         end = time.time()
         print('Took', end-start)
-
-
-    
   """
 
-  with ProcessPoolExecutor(max_workers=2) as executor:
-    futures = [executor.submit(process_file, f, model_dir, model_type, soil_dir, out_dir) 
-    for f in s2_files[:4]
+  mp.set_start_method('spawn', force=True)
+  with ProcessPoolExecutor(max_workers=6) as executor:
+    futures = [executor.submit(process_file, i, f, model_dir, model_type, soil_dir, out_dir) 
+    for i, f in enumerate(s2_files) if i>1699
     ]
 
-    for i, future in enumerate(as_completed(futures)):
-        print(f'Completed {i+1}/{len(s2_files)}')
+    for j, future in enumerate(as_completed(futures)):
+        i, msg, elapsed = future.result()
+        print(f"{i}: {msg}. Took {elapsed}")
 
-  """
+"""
