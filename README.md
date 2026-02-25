@@ -154,9 +154,9 @@ Finally, to produce specific aggregated plots, use the script. At this step, spe
 python FC_mapping/aggregate_FC.py
 ```
 This contains several functions:
-- `plot_median_of_pixelmean`: get the weekly mean of each pixel, and aggregate with median over municipality. Consider only if >50% of the arable land of that muncipialtiy is covered by valid data. Results are saved to `CH_fraction_{weeknbr}_soil_arable_COMMUNE.gpkg` and `CH_fraction_{weeknbr}_soil_arable_COMMUNE.png`
+- `plot_median_of_pixelmean`: get the weekly mean of each pixel, and aggregate with median over municipality. Consider only if >50% of the arable land of that muncipialtiy is covered by valid data. Results are saved to `CH_fraction_weekly_{yr}/CH_fraction_{weeknbr}_soil_arable_COMMUNE.gpkg` and `CH_fraction_weekly_{yr}/CH_fraction_{weeknbr}_soil_arable_COMMUNE.png`
 - `count_fraction_soil_above_50percent`: get the weekly mean of each pixel. Per municipality count the fraction of pixels in arable land that have FC soil >0.5. Consider only if >50% of the arable land of that muncipialtiy is covered by valid data. Results are saved to CH_fraction_soilthresh_{weeknbr}_COMMUNE.gpkg
-- `avg_baresoil_days`: get the weekly mean of each pixel. Over a year, compute how many days the pixel is bare (ie. FC soil > 0.5). Per municipality compute the average bare soil days. Results are saved to `CH_baredays_{level.upper()}.gpkg`
+- `avg_baresoil_days`: get the weekly mean of each pixel. Over a year, compute how many days the pixel is bare (ie. FC soil > 0.5). Per municipality compute the average bare soil days. Results are saved to `CH_fraction_weekly_{yr}/CH_baredays_{level.upper()}.gpkg`
 
 
 Additional functions to create specific plots (including weekly fraction of bare soil per municipality) are provided in the script `report_plots.py`.
