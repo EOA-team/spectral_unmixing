@@ -37,6 +37,10 @@ and the updated plots can be found in the following plots: `baresoil/plots/sampl
 
 All soils will be classified to these groups. 
 
+### Additional scripts
+- `create_qgis_layers.py`: create shapefiles containing predicted soil groups for each sampled point
+- `predict_SRC_soilgroup.py`: apply K-means mode to all SRC data and save
+
 
 
 ## 2. PV and NPV endmembers
@@ -72,11 +76,11 @@ python spectral_mixing/mix_spectra_composition.py
 
 The synthetic mixtures (pairs of features/labels) are stored in the following way:
 ```
-feat_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil_group_nbr}_SHADOW-TRUE_FEATURES_CLASS-00{feature_class}_ITERATION-00{i}.txt'
-resp_filename = f'synthetic_samples/SYNTHMIX_SOIL-00{soil_group_nbr}_SHADOW-TRUE_RESPONSE_CLASS-00{feature_class}_ITERATION-00{i}.txt'
+feat_filename = f'synthetic_samples_composition_10k/SYNTHMIX_SOIL-00{soil_group_nbr}_SHADOW-TRUE_FEATURES_CLASS-00{feature_class}_ITERATION-00{i}.txt'
+resp_filename = f'synthetic_samples_composition_10k/SYNTHMIX_SOIL-00{soil_group_nbr}_SHADOW-TRUE_RESPONSE_CLASS-00{feature_class}_ITERATION-00{i}.txt'
 ```
 
-where 0 means the global model, and the soil groups determined from the K-means clustering  are named 1 to 5. There are 3 feature classes (1=NPV, 2=PV, 3=Soil). Each dataset contains 1000 mixtures, and these datasets are iterated 5 times.
+where 0 means the global model, and the soil groups determined from the K-means clustering  are named 1 to 5. There are 3 feature classes (1=NPV, 2=PV, 3=Soil). Each dataset contains 10'000 mixtures, and these datasets are iterated 5 times.
 
 The resonse contains the fractions of NPV, PV, Soil and shadow. 
 
