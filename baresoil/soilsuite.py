@@ -20,6 +20,8 @@ import contextily as ctx
 import pickle
 import glob
 import seaborn as sns
+from matplotlib_scalebar.scalebar import ScaleBar
+from matplotlib_map_utils.core.north_arrow import NorthArrow, north_arrow
 
 
 def download_SRC_from_STAC(bbox, assets, download_dir, STAC_URL='https://geoservice.dlr.de/eoc/ogc/stac/v1', collection_id="S2-soilsuite-europe-2018-2022-P5Y"):
@@ -468,7 +470,7 @@ for n_optim in range(3,6):
 
 ######################
 # 6b. For K=5, rename clusters 
-"""
+
 # Check 25th, 50th, 75th percentiles of each cluster
 bands = ['SRC_B2', 'SRC_B3','SRC_B4','SRC_B5','SRC_B6','SRC_B7','SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']
 wvl = [490,560,665,705,740,783,842,865,1610,2190]
@@ -494,16 +496,34 @@ gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="E
 gdf['cluster'] = gdf['cluster'].astype('category')
 
 fig, ax = plt.subplots(figsize=(16, 10))
-colors =['teal', 'darkorange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
+colors =['teal', 'darkorange', 'purple', 'pink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
 custom_cmap = ListedColormap(colors)
 
 gdf.plot(ax=ax, column='cluster', cmap=custom_cmap, markersize=0.1, legend=True, categorical=True)
 ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
-plt.title(f'Clusters bare soil reflectances ({n_optim} clusters)', fontsize=16)
-plt.xlabel('Lon [m]')
-plt.ylabel('Lat [m]')
+plt.title(f'Location of clustered bare soil reflectances ({n_optim} clusters)', fontsize=20)
+#plt.xlabel('Lon [m]', size=18)
+#plt.ylabel('Lat [m]', size=18)
+#plt.xticks(fontsize=18)
+#plt.yticks(fontsize=18)
+#ax.xaxis.get_offset_text().set_fontsize(16)
+#ax.yaxis.get_offset_text().set_fontsize(16)
+ax.set_xticks([])
+ax.set_yticks([])
+# Add a scale bar
+scalebar = ScaleBar(1, location='lower right', units='m', scale_loc='bottom', length_fraction=0.2)  # 1 unit = 1 meter
+ax.add_artist(scalebar)
+# Add a north arrow
+north_arrow(
+    ax, location="upper left", rotation={"crs": gdf.crs, "reference": "center"}
+)
+leg = ax.get_legend()  # capture the legend
+leg.set_title('Soil group', prop={'size': 16})  # set legend title and font size
+for text in leg.get_texts():  # set font size for legend labels
+    text.set_fontsize(14)
 plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_v2_renamed.png')
 
+"""
 # Plot the summarised spectra with new names
 summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75])
 
@@ -533,30 +553,64 @@ plt.ylabel('Reflectance')
 plt.ylim(0,5000)
 plt.title('Soil Reflectance Spectra')
 plt.savefig(f'plots/soil_endmembers_{n_optim}_clusters_agri_v2_renamed.png')
-
-
+"""
+"""
 # Plot clusters in different subplots
 gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df['x'], df['y']), crs="EPSG:3035").to_crs(epsg=3857)
 gdf['cluster'] = gdf['cluster'].astype('category')
 
 # Create n_optim subplots, plotting the different clusters
-fig, axs = plt.subplots(nrows=int(np.ceil(n_optim/3)), ncols=3, figsize=(15, 10))
+fig, axs = plt.subplots(nrows=int(np.ceil(n_optim/3)), ncols=3, figsize=(15, 10), sharey=True)
 axs = axs.flatten()
 colors =['teal', 'orange', 'purple', 'deeppink', 'limegreen', 'dodgerblue'][:n_optim] # adapt cmap in function of nbr of clusters
 custom_cmap = ListedColormap(colors)
 
-for i in range(n_optim):
+for i, clust in enumerate(sorted(gdf['cluster'].unique())):
     ax = axs[i]
-    gdf[gdf['cluster'] == i].plot(ax=ax, color=colors[i], markersize=0.1)
+    gdf[gdf['cluster'] == clust].plot(ax=ax, color=colors[i], markersize=0.01, alpha=0.5)
     ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor, crs=gdf.crs)
-    ax.set_title(f'Cluster {i}')
+    ax.set_title(f'Cluster {clust}', fontsize=18)
+    ax.tick_params(axis='both', which='major', labelsize=16)
+    ax.xaxis.get_offset_text().set_fontsize(16)
+    ax.yaxis.get_offset_text().set_fontsize(16)
 
+for j in range(len(gdf['cluster'].unique()), len(axs)):
+    axs[j].set_visible(False)
+
+plt.tight_layout()
 plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_seperated_v2_renamed.png')
-""" 
+"""
+"""
+###
+# Plot zoomed in on a region
+gdf.plot(ax=ax, column='cluster', cmap=custom_cmap, markersize=10, legend=True, categorical=True)
+plt.title(f'Clustered bare soil reflectances', fontsize=20)
+ax.set_xticks([])
+ax.set_yticks([])
+# Add a scale bar
+scalebar = ScaleBar(1, location='lower right', units='m', scale_loc='bottom', length_fraction=0.2)  # 1 unit = 1 meter
+ax.add_artist(scalebar)
+# Add a north arrow
+north_arrow(
+    ax, location="upper left", rotation={"crs": gdf.crs, "reference": "center"}
+)
+plt.xlim(777000, 816000)
+plt.ylim(5921000, 5950000)
+ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.HOT, crs=gdf.crs) #
+ax.xaxis.get_offset_text().set_fontsize(16)
+ax.yaxis.get_offset_text().set_fontsize(16)
+leg = ax.get_legend()  # capture the legend
+leg.set_bbox_to_anchor((0.975, 0.94))
+leg.set_title('Soil group', prop={'size': 16})  # set legend title and font size
+for text in leg.get_texts():  # set font size for legend labels
+    text.set_fontsize(14)
+plt.savefig(f'plots/sampled_pts_{n_optim}_clusters_agri_v2_renamed_zoom.png')
+"""
+
 
 ######################
 # 7. Save endmembers
-
+""" 
 bands = ['SRC_B2', 'SRC_B3','SRC_B4','SRC_B5','SRC_B6','SRC_B7','SRC_B8', 'SRC_B8A', 'SRC_B11', 'SRC_B12']
 
 n_optim = 5
@@ -578,7 +632,7 @@ summary = df.groupby('cluster')[bands].quantile([0.25, 0.50, 0.75]).reset_index(
 summary.to_pickle('summarised_soil_samples_renamed.pkl')
 
 
-
+"""
 
 ######################
 # 8. Inference and soil map: apply K-means model to all pixels in CH
