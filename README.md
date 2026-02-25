@@ -110,9 +110,11 @@ python spectral_unmixing/code/UAV_validation.py
 The models are also evaulated on some georeferenced farm data with field calendars (ZA-AUI data).
 FC timeseries (only basic cloud cleaning done) with images were produced for farms over multiple years.
 
-- `spectral_unmixing/code/za-aui_data.py`:  produces the timeseries and plots for the farms. Saves the results year by year, crop by crop in `spectral_unmixing/results/ZA-AUI/<year>/<crop_name>/<farm_id>/...png`. A visual/qualitative evaluation of the performance of the models based on these plots was done in `spectral_unmixing/code/ZA-AUI_evaluation.xlsx` and these results were synthesised in `spectral_unmixing/code/za-aui.ipynb`
-- `spectral_unmixing/code/za-aui_data_management.py`: produces the plots for a farms where theres was a specific management activity. Results saved to `spectral_unmixing/results/ZA-AUI/NPV_check`
-- `spectral_unmixing/code/za-aui_data_fcprecompute.py`: Same as  `spectral_unmixing/code/za-aui_data.py` except that it uses precomputed FC data instead of running predictions on the fly.
+- `spectral_unmixing/code/validation/za-aui_data.py`:  produces the timeseries and plots for the farms. Saves the results year by year, crop by crop in `spectral_unmixing/results/ZA-AUI/<year>/<crop_name>/<farm_id>/...png`. A visual/qualitative evaluation of the performance of the models based on these plots was done in `spectral_unmixing/code/validation/ZA-AUI_evaluation.xlsx` and these results were synthesised in `spectral_unmixing/code/za-aui.ipynb`
+- `spectral_unmixing/code/validation/za-aui_data_management.py`: produces the plots for a farms where theres was a specific management activity. Results saved to `spectral_unmixing/results/ZA-AUI/NPV_check`
+- `spectral_unmixing/code/validation/za-aui_data_fcprecompute.py`: Same as  `spectral_unmixing/code/za-aui_data.py` except that it uses precomputed FC data instead of running predictions on the fly.
+- `spectral_unmixing/code/validation/za-aui_data_animation.py`: Uses precomputed FC data instead of running predictions on the fly, create specific plot or animation for a single farm
+
 
 
 ## 5. Timeseries cleaning
