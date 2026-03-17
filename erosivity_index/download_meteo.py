@@ -6,8 +6,12 @@ Includes data from automatic, precipitation and tower stations from 2000 onwards
 
 import os
 import pandas as pd
+import geopandas as gpd
 from pystac_client import Client
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import contextily as ctx
+from shapely.geometry import Point
 
 
 def sanitize_column_names(df):
@@ -39,6 +43,36 @@ station_metadata_file = 'stations_data/metadata/ogd-smn_meta_stations.csv'
 stations = pd.read_csv(station_metadata_file, delimiter=';', encoding='latin1')
 stations_list = stations['station_abbr'].str.lower().tolist()
 
+########
+# STATION INFORMATION
+
+geometry = [Point(xy) for xy in zip(stations['station_coordinates_wgs84_lon'],
+                                    stations['station_coordinates_wgs84_lat'])]
+gdf = gpd.GeoDataFrame(stations, geometry=geometry, crs="EPSG:4326")
+gdf_web = gdf.to_crs(epsg=3857)
+
+# Plot
+fig, ax = plt.subplots(figsize=(10,10))
+gdf_web.plot(ax=ax, color='red', markersize=50, alpha=0.7)
+ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor)
+red_patch = mpatches.Patch(color='red', label='Stations')
+ax.legend(handles=[red_patch])
+ax.set_axis_off()
+plt.savefig('station_locations.png')
+
+# Plot with categorisation
+fig, ax = plt.subplots(figsize=(10,10))
+gdf_web.plot(ax=ax, column='station_exposition_en', markersize=50, cmap='tab20', categorical=True, legend=True)
+ctx.add_basemap(ax, source=ctx.providers.SwissFederalGeoportal.NationalMapColor)
+ax.set_axis_off()
+ax.get_legend().set_bbox_to_anchor((1, 1))  # top-right outside the map
+plt.tight_layout()
+plt.savefig('station_locations_types.png')
+
+
+########
+# DOWNLOAD DATA
+
 output_dir = "stations_data/stations_csv"
 os.makedirs(output_dir, exist_ok=True)
 
@@ -49,7 +83,7 @@ collections = {
 'precip': 'ch.meteoschweiz.ogd-smn-precip', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn-precip?.language=en
 #'tower': 'ch.meteoschweiz.ogd-smn-tower', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn-tower?.language=en
 }
-
+"""
 # Download data
 for station in stations_list:
     output_file =  os.path.join(output_dir, f"{station.upper()}.csv")
@@ -112,7 +146,7 @@ for station in stations_list:
         print(f'Saved for {station.upper()}:', save_path)
     else:
         print('No 10min precip data in time frame for station:', station.upper())
-
+"""
 
 
 
