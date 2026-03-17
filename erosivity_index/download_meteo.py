@@ -28,74 +28,104 @@ def sanitize_column_names(df):
         df_cleaned = df_cleaned.rename(columns={"reference_timestamp": "time"})
 
     if not 'rre150z0' in df_cleaned.columns:
-        print("Error: No valid precipitaiton column found!")
+        print("Error: No valid precipitation column found!")
         return None
 
 
     return df_cleaned
 
 
-if not os.path.exists('raw_station_data.pkl'):
+station_metadata_file = 'stations_data/metadata/ogd-smn_meta_stations.csv'
+stations = pd.read_csv(station_metadata_file, delimiter=';', encoding='latin1')
+stations_list = stations['station_abbr'].str.lower().tolist()
 
-    catalog = Client.open("https://data.geo.admin.ch/api/stac/v1")
+output_dir = "stations_data/stations_csv"
+os.makedirs(output_dir, exist_ok=True)
 
-    collections = {
-    'automatic': 'ch.meteoschweiz.ogd-smn', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn?.language=en
-    'precip': 'ch.meteoschweiz.ogd-smn-precip', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn-precip?.language=en
-    #'tower': 'ch.meteoschweiz.ogd-smn-tower', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn-tower?.language=en
-    }
+# STAC parameters
+catalog = Client.open("https://data.geo.admin.ch/api/stac/v1")
+collections = {
+'automatic': 'ch.meteoschweiz.ogd-smn', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn?.language=en
+'precip': 'ch.meteoschweiz.ogd-smn-precip', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn-precip?.language=en
+#'tower': 'ch.meteoschweiz.ogd-smn-tower', #https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-smn-tower?.language=en
+}
 
-    t_assets = [] # 10min data
+# Download data
+for station in stations_list:
+    output_file =  os.path.join(output_dir, f"{station.upper()}.csv")
+
+    # Skip if already downloaded
+    if os.path.exists(output_file):
+        print(f"{station.upper()} already downloaded, skipping.")
+        continue
+
+    t_assets = []
+
     for c in collections:
-        print(f"Collecting data from {c} stations")
-        collection = collections[c]
+        collection_id = collections[c]
 
-        items = list(catalog.search(
-            collections=[collection], 
-            limit=200
-        ).items())
+        # Search for the station item
+        search = catalog.search(collections=[collection_id], ids=[station])
+        items = list(search.items())
+        if not items:
+            print(f"No item found for station {station.upper()} in {c}")
+            continue
 
-        print("Stations:", len(items))
+        item = items[0]
 
-        for item in items:   # loop over stations
-            for key, asset in item.assets.items():
-                if "_t_" in key:   # 10-minute resolution
-                    t_assets.append({
-                        "station": item.id,
-                        "name": key,
-                        "url": asset.href
-                    })
+        # Filter 10-min resolution assets
+        for key, asset in item.assets.items():
+            if "_t_" in key:  # 10-minute data
+                t_assets.append(asset.href)
 
-
-    print('Files:', len(t_assets))
-
+    if not t_assets:
+        print(f"No 10-min assets found for station {station.upper()}")
+        continue
+    
     dfs = []
-    for asset in t_assets:
-        
-        print("Loading", asset["station"], asset["name"])
-        
-        df = pd.read_csv(asset["url"], delimiter=';')
-        df = sanitize_column_names(df)    
-        df["station"] = asset["station"]    
+    for url in t_assets:  
+        df = pd.read_csv(url, delimiter=';')
         dfs.append(df)
+    df_station = pd.concat(dfs, ignore_index=True)
+    df_station = sanitize_column_names(df_station) 
 
-    data = pd.concat(dfs, ignore_index=True)
-    data.to_pickle('raw_station_data.pkl')
+    # Check that the station actually collects variable rre150z0
+    if  df_station is None:
+        print('No 10min precip data for station:', station.upper())
+        continue
+    if not len(df_station["rre150z0"].dropna()):
+        print('No 10min precip data for station:', station.upper())
+        continue
+    
+    # Filter time < 2026    
+    df_station["time"] = pd.to_datetime(
+        df_station["time"],
+        format="%d.%m.%Y %H:%M"
+    )
+    df_station = df_station[df_station["time"] < "2026-01-01"]
+    df_station = df_station[["time", "rre150z0"]]
+    df_station["station"] = station
+    # Check that there is data
+    if len(df_station.dropna()):
+        save_path = os.path.join(output_dir, f"{station.upper()}.csv")
+        df_station.to_csv(save_path, index=False)
+        print(f'Saved for {station.upper()}:', save_path)
+    else:
+        print('No 10min precip data in time frame for station:', station.upper())
 
-else:
-    pass #data = pd.read_pickle('raw_station_data.pkl')
 
 
-data["time"] = pd.to_datetime(
-    data["time"],
-    format="%d.%m.%Y %H:%M"
-)
-data = data[data["time"] < "2026-01-01"]
 
+#########
+# DATA CHECKS
 """
 # Some stats on the raw data:
 # find min-max date for each site
 # number of data points for each site
+
+# Load all data
+dfs = [pd.read_csv(os.path.join(output_dir, f)) for f in os.listdir(output_dir)]
+data = pd.concat(dfs, ignore_index=True)
 
 site_stats = data.groupby("station")["time"].agg(
     start_date="min",
@@ -120,11 +150,3 @@ plt.ylabel("Site index")
 plt.title("Temporal coverage of each site")
 plt.savefig('site_temporal.png')
 """
-
-
-output_dir = "stations_data/stations_csv"
-os.makedirs(output_dir, exist_ok=True)
-for station, df_station in data.groupby("station"):
-    df_station = df_station[["time", "rre150z0"]]
-    df_station.to_csv(f"stations_csv/{station}.csv", index=False)
-    print(f'Saved for {station}')
