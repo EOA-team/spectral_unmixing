@@ -8,4 +8,4 @@ FC_mapping/CH_fraction_weekly*
 Philippa
 spectral_mixing/synthetic_samples/*
 spectral_unmixing/results/UAV_validation/*png
-erosivity_index/precip
+erosivity_index/covariates
